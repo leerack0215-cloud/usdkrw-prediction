@@ -1,7 +1,10 @@
 
-outputs/*.keras
-outputs/*.h5
+# 무거운 파일만 제외
 outputs/cache/
 __pycache__/
 *.pyc
 .env
+
+# 아래는 이제 포함! (용량 작아서 OK)
+# outputs/*.keras  ← 주석 처리
+# outputs/*.pkl    ← 주석 처리
