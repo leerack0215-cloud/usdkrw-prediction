@@ -42,7 +42,7 @@ def collect_data():
     frames = {}
     for name, ticker in TICKERS.items():
         try:
-            df = yf.download(ticker, start="2018-01-01",
+            df = yf.download(ticker, start="2015-01-01",
                              auto_adjust=True, progress=False)
             close = df["Close"]
             if isinstance(close, pd.DataFrame):
@@ -118,11 +118,11 @@ def make_sequences(X, y, seq_len=SEQ_LEN):
 # ── 경량 LSTM ──
 def build_light_lstm(seq_len, n_feat):
     inp = Input(shape=(seq_len, n_feat))
-    x   = LSTM(64, return_sequences=True)(inp)   # 256→64
+    x   = LSTM(128, return_sequences=True)(inp)
     x   = Dropout(0.2)(x)
-    x   = LSTM(32)(x)                             # 128→32
+    x   = LSTM(64)(x)
     x   = Dropout(0.1)(x)
-    x   = Dense(16, activation="relu")(x)
+    x   = Dense(32, activation="relu")(x)
     out = Dense(1)(x)
     model = Model(inp, out, name="LightLSTM")
     model.compile(optimizer=Adam(1e-3), loss=Huber())
@@ -245,8 +245,12 @@ def main():
 
     # 앙상블
     print("\n[앙상블]")
-    min_len = min(len(v) for v in val_preds.values())
-    aligned = {k: v[-min_len:] for k,v in val_preds.items()}
+    # CNN 제외 (성능 불안정)
+    val_preds_filtered = {k:v for k,v in val_preds.items() 
+                          if k != "CNN"}
+    min_len = min(len(v) for v in val_preds_filtered.values())
+    aligned = {k: v[-min_len:] for k,v in val_preds_filtered.items()}
+    val_preds = val_preds_filtered
     yva_a   = yva[-min_len:]
     X_meta  = np.column_stack(list(aligned.values()))
     ridge   = Ridge(alpha=1.0)
@@ -292,8 +296,11 @@ def main():
             (p_cnn  - last_price)/last_price,
             (p_lgb_today - last_price)/last_price,
         ]])
-        p_ens = float(np.mean([p_lstm, p_cnn, p_lgb_today]))
+        # CNN 제외하고 앙상블
+        p_ens = float(np.mean([p_lstm, p_lgb_today]))
         forecasts_by_model["Ensemble"] = p_ens
+        # CNN은 참고용으로만
+        forecasts_by_model.pop("CNN", None)
 
     best_pred = forecasts_by_model.get("Ensemble", last_price)
     forecast_out = {
