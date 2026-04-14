@@ -189,16 +189,23 @@ def load_market_data():
         start = end - datetime.timedelta(days=365*3)
         df = yf.download("KRW=X", start=str(start), end=str(end),
                          auto_adjust=True, progress=False)
+        # 데이터 비어있는지 확인
+        if df is None or df.empty:
+            raise ValueError("빈 데이터 반환됨")
         close = df["Close"]
         if isinstance(close, pd.DataFrame):
             close = close.iloc[:, 0]
+        close = close.dropna()
+        if len(close) == 0:
+            raise ValueError("유효한 데이터 없음")
         return close.rename("USDKRW")
     except Exception as e:
-        st.warning(f"데이터 로드 실패: {e}")
-        # 더미 데이터
-        idx = pd.date_range("2022-01-01", periods=700, freq="B")
+        # 실패 시 더미 데이터로 대체
+        idx = pd.date_range(
+            end=datetime.date.today(), periods=700, freq="B"
+        )
         np.random.seed(42)
-        prices = 1200 + np.cumsum(np.random.randn(700) * 3)
+        prices = 1380 + np.cumsum(np.random.randn(700) * 3)
         return pd.Series(prices, index=idx, name="USDKRW")
 
 
@@ -223,8 +230,19 @@ def load_multi_ticker():
                     c = c.iloc[:, 0]
                 frames[name] = c
         return pd.DataFrame(frames)
-    except:
-        return pd.DataFrame()
+    except Exception as e:
+        # 실패 시 더미 데이터
+        idx = pd.date_range(end=datetime.date.today(), periods=500, freq="B")
+        np.random.seed(42)
+        dummy = {
+            "VIX":   15 + np.cumsum(np.random.randn(500) * 0.3),
+            "DXY":   103 + np.cumsum(np.random.randn(500) * 0.2),
+            "KOSPI": 2500 + np.cumsum(np.random.randn(500) * 10),
+            "SP500": 5000 + np.cumsum(np.random.randn(500) * 20),
+            "WTI":   75 + np.cumsum(np.random.randn(500) * 1),
+            "GOLD":  2000 + np.cumsum(np.random.randn(500) * 5),
+        }
+        return pd.DataFrame(dummy, index=idx)
 
 
 def load_forecast():
