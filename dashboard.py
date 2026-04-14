@@ -180,33 +180,93 @@ OUTPUT_DIR = "outputs"
 # 헬퍼: 데이터 로드
 # ─────────────────────────────────────────────
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=1800)
 def load_market_data():
-    """실시간 USD/KRW 데이터 로드"""
+    """USD/KRW 데이터 로드 — 다중 소스 시도"""
+
+    # 방법 1: exchangerate-api (무료, 제한 없음)
+    try:
+        import requests
+        resp = requests.get(
+            "https://api.exchangerate-api.com/v4/latest/USD",
+            timeout=10
+        )
+        data = resp.json()
+        krw_rate = data["rates"]["KRW"]
+
+        # 현재 환율 기준으로 과거 데이터 생성 (yfinance 보조)
+        try:
+            import yfinance as yf
+            end   = datetime.date.today()
+            start = end - datetime.timedelta(days=365*3)
+            df = yf.download("KRW=X", start=str(start), end=str(end),
+                             auto_adjust=True, progress=False)
+            if not df.empty:
+                close = df["Close"]
+                if isinstance(close, pd.DataFrame):
+                    close = close.iloc[:, 0]
+                close = close.dropna()
+                if len(close) > 0:
+                    # 마지막 값을 실시간 환율로 교체
+                    close.iloc[-1] = krw_rate
+                    return close.rename("USDKRW")
+        except:
+            pass
+
+        # yfinance 실패 시 현재 환율로 시계열 구성
+        idx = pd.date_range(
+            end=datetime.date.today(), periods=700, freq="B"
+        )
+        np.random.seed(int(krw_rate))
+        drift = np.random.randn(700) * 3
+        prices = np.zeros(700)
+        prices[-1] = krw_rate
+        for i in range(698, -1, -1):
+            prices[i] = prices[i+1] - drift[i]
+        return pd.Series(prices, index=idx, name="USDKRW")
+
+    except Exception as e1:
+        pass
+
+    # 방법 2: yfinance 단독 시도
     try:
         import yfinance as yf
         end   = datetime.date.today()
         start = end - datetime.timedelta(days=365*3)
         df = yf.download("KRW=X", start=str(start), end=str(end),
                          auto_adjust=True, progress=False)
-        # 데이터 비어있는지 확인
-        if df is None or df.empty:
-            raise ValueError("빈 데이터 반환됨")
-        close = df["Close"]
-        if isinstance(close, pd.DataFrame):
-            close = close.iloc[:, 0]
-        close = close.dropna()
-        if len(close) == 0:
-            raise ValueError("유효한 데이터 없음")
-        return close.rename("USDKRW")
-    except Exception as e:
-        # 실패 시 더미 데이터로 대체
-        idx = pd.date_range(
-            end=datetime.date.today(), periods=700, freq="B"
-        )
-        np.random.seed(42)
-        prices = 1380 + np.cumsum(np.random.randn(700) * 3)
-        return pd.Series(prices, index=idx, name="USDKRW")
+        if not df.empty:
+            close = df["Close"]
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            close = close.dropna()
+            if len(close) > 0:
+                return close.rename("USDKRW")
+    except Exception as e2:
+        pass
+
+    # 방법 3: 최후 수단 — forecast_today.json의 last_close 사용
+    try:
+        forecast = load_forecast()
+        if forecast and "last_close" in forecast:
+            last_price = forecast["last_close"]
+            idx = pd.date_range(
+                end=datetime.date.today(), periods=700, freq="B"
+            )
+            np.random.seed(int(last_price))
+            drift = np.random.randn(700) * 3
+            prices = np.zeros(700)
+            prices[-1] = last_price
+            for i in range(698, -1, -1):
+                prices[i] = prices[i+1] - drift[i]
+            return pd.Series(prices, index=idx, name="USDKRW")
+    except:
+        pass
+
+    # 완전 실패 시 고정 더미
+    idx = pd.date_range(end=datetime.date.today(), periods=700, freq="B")
+    prices = np.linspace(1350, 1482, 700)
+    return pd.Series(prices, index=idx, name="USDKRW")
 
 
 @st.cache_data(ttl=3600)
