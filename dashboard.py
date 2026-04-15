@@ -514,9 +514,9 @@ for col, (lbl, val, delta) in zip(cols, kpi_rows):
 # 탭
 # ════════════════════════════════════════════════════════
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📈 가격 차트", "🔮 다중 호라이즌 예측",
-    "⚡ 모델 성능", "🌍 거시 지표", "📋 백테스팅",
+    "⚡ 모델 성능", "🌍 거시 지표", "📋 백테스팅", "📰 뉴스 센티멘트",
 ])
 
 
@@ -536,16 +536,20 @@ with tab1:
     sma20 = krw_view.rolling(20).mean()
     std20 = krw_view.rolling(20).std()
 
-    # 가격 + EMA + 볼린저
+    # ── 가격 (fill="tozeroy" 제거 → autofit 정상화) ──
+    y_min = float(krw_view.min()) * 0.998
+    y_max = float(krw_view.max()) * 1.002
+
     fig.add_trace(go.Scatter(
         x=krw_view.index, y=krw_view.values,
         mode="lines", line=dict(color="#4a9eff", width=1.5),
-        name="USD/KRW", fill="tozeroy", fillcolor="rgba(74,158,255,.06)",
+        name="USD/KRW",
     ), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=krw_view.index, y=ema20,
         mode="lines", line=dict(color="#f59e0b", width=1, dash="dot"), name="EMA20",
     ), row=1, col=1)
+    # 볼린저밴드
     bb_x = list(krw_view.index) + list(krw_view.index[::-1])
     bb_y = list(sma20 + 2*std20) + list((sma20 - 2*std20)[::-1])
     fig.add_trace(go.Scatter(
@@ -567,15 +571,22 @@ with tab1:
     fig.add_hline(y=30, line_dash="dot", line_color="#34d399", row=2, col=1)
 
     # 일간 변화율
-    pct = krw_view.pct_change() * 100
+    pct_bar = krw_view.pct_change() * 100
     fig.add_trace(go.Bar(
-        x=krw_view.index, y=pct,
-        marker_color=["#34d399" if v >= 0 else "#f87171" for v in pct],
+        x=krw_view.index, y=pct_bar,
+        marker_color=["#34d399" if v >= 0 else "#f87171" for v in pct_bar],
         name="일간변화(%)",
     ), row=3, col=1)
 
-    fig.update_layout(**CHART_BASE, height=560,
-                      yaxis2_title="RSI", yaxis3_title="%")
+    fig.update_layout(
+        **CHART_BASE, height=560,
+        yaxis=dict(
+            range=[y_min, y_max],          # ← 오토핏 수동 설정
+            gridcolor="#1a3050", gridwidth=.5,
+            zeroline=False, linecolor="#1a3050",
+        ),
+        yaxis2_title="RSI", yaxis3_title="%",
+    )
     st.plotly_chart(fig, use_container_width=True)
 
     # 기술 지표 + 수익률 요약
@@ -586,14 +597,14 @@ with tab1:
         rsi_st = "과매수" if rsi_v > 70 else ("과매도" if rsi_v < 30 else "중립")
         items  = {
             "RSI (14)":    f"{rsi_v:.1f}  {rsi_st}",
-            "EMA20 대비":  f"{'위' if last_price > float(ema20.iloc[-1]) else '아래'} "
-                           f"({(last_price/float(ema20.iloc[-1])-1)*100:.2f}%)"
+            "EMA20 대비":  f"{'위' if cur_price > float(ema20.iloc[-1]) else '아래'} "
+                           f"({(cur_price/float(ema20.iloc[-1])-1)*100:.2f}%)"
                            if not ema20.empty else "N/A",
             "20일 변동성": f"{float(krw_view.pct_change().rolling(20).std().iloc[-1]*100*np.sqrt(252)):.1f}%"
                            if len(krw_view) > 20 else "N/A",
             "볼린저 위치": (
-                "상단 근접" if last_price > float((sma20+2*std20).iloc[-1]) else
-                "하단 근접" if last_price < float((sma20-2*std20).iloc[-1]) else "중간"
+                "상단 근접" if cur_price > float((sma20+2*std20).iloc[-1]) else
+                "하단 근접" if cur_price < float((sma20-2*std20).iloc[-1]) else "중간"
             ),
         }
         for k, v in items.items():
@@ -951,6 +962,233 @@ with tab5:
             '학술/참고 목적 전용입니다.</div>',
             unsafe_allow_html=True,
         )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TAB 6 — 뉴스 센티멘트 (1시간 캐시)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@st.cache_data(ttl=3600)
+def fetch_news() -> list:
+    """
+    USD/KRW 관련 뉴스 RSS 스크래핑 (1시간 캐시)
+    소스: Reuters, Investing.com, 연합뉴스 등 RSS
+    반환: [{"title":..., "link":..., "pub":..., "source":...}, ...]
+    """
+    import requests
+    from xml.etree import ElementTree as ET
+
+    feeds = [
+        ("Reuters FX",    "https://feeds.reuters.com/reuters/businessNews"),
+        ("Investing.com", "https://www.investing.com/rss/news_301.rss"),
+        ("연합뉴스 경제", "https://www.yna.co.kr/rss/economy.xml"),
+    ]
+    KW = ["KRW","원달러","환율","USD","won","Korea","한국","Fed","금리",
+          "BOK","한은","외환","KOSPI","달러"]
+
+    articles = []
+    for src, url in feeds:
+        try:
+            r = requests.get(url, timeout=6,
+                             headers={"User-Agent": "Mozilla/5.0"})
+            root = ET.fromstring(r.content)
+            for item in root.iter("item"):
+                title = (item.findtext("title") or "").strip()
+                link  = (item.findtext("link")  or "").strip()
+                pub   = (item.findtext("pubDate") or
+                         item.findtext("{http://purl.org/dc/elements/1.1/}date") or "").strip()
+                if any(k.lower() in title.lower() for k in KW):
+                    articles.append({"title": title, "link": link,
+                                     "pub": pub[:25], "source": src})
+                if len(articles) >= 30:
+                    break
+        except Exception:
+            pass
+    return articles[:30]
+
+
+@st.cache_data(ttl=3600)
+def analyze_sentiment(articles: tuple) -> list:
+    """
+    Claude API로 뉴스 센티멘트 분석
+    각 뉴스별 USD/KRW 영향도를 -2 ~ +2 로 평가
+    (+ = 달러강세/원화약세, - = 달러약세/원화강세)
+    """
+    if not articles:
+        return []
+
+    import anthropic, json as _json
+
+    headlines = "\n".join(
+        [f"{i+1}. {a['title']}" for i, a in enumerate(articles)]
+    )
+    prompt = f"""다음 뉴스 헤드라인들이 USD/KRW 환율에 미치는 영향을 분석하세요.
+
+헤드라인:
+{headlines}
+
+각 뉴스에 대해 아래 JSON 배열로만 응답하세요 (다른 텍스트 없이):
+[
+  {{
+    "idx": 1,
+    "score": <-2에서+2 사이 정수. +2=강한달러강세, -2=강한원화강세, 0=중립>,
+    "reason": "<한국어로 15자 이내 이유>",
+    "impact": "<상승|하락|중립>"
+  }},
+  ...
+]"""
+
+    try:
+        client = anthropic.Anthropic()
+        msg    = client.messages.create(
+            model      = "claude-sonnet-4-20250514",
+            max_tokens = 1500,
+            messages   = [{"role": "user", "content": prompt}],
+        )
+        text = msg.content[0].text.strip()
+        # JSON 파싱
+        start = text.find("[")
+        end   = text.rfind("]") + 1
+        return _json.loads(text[start:end])
+    except Exception:
+        return []
+
+
+with tab6:
+    st.markdown('<div class="sec-hdr">📰 환율 영향 뉴스 센티멘트</div>',
+                unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style='background:rgba(37,99,235,.08);border:1px solid rgba(37,99,235,.3);
+    border-radius:8px;padding:10px 16px;font-size:.78rem;color:#7a9dbf;margin-bottom:14px'>
+    💡 1시간마다 자동 수집 · Claude AI가 각 뉴스의 USD/KRW 영향도 평가<br>
+    <b>+2</b> 달러 강세(원화약세) &nbsp;|&nbsp; <b>0</b> 중립 &nbsp;|&nbsp; <b>-2</b> 원화 강세(달러약세)
+    </div>""", unsafe_allow_html=True)
+
+    with st.spinner("뉴스 수집 + AI 분석 중..."):
+        news_list = fetch_news()
+
+    if not news_list:
+        st.warning("뉴스를 불러오지 못했습니다. 잠시 후 다시 시도하세요.")
+    else:
+        # 센티멘트 분석
+        with st.spinner(f"{len(news_list)}개 뉴스 AI 분석 중..."):
+            sentiments = analyze_sentiment(tuple(
+                (a["title"], a["source"]) for a in news_list
+            ))
+
+        # 센티멘트 맵 생성
+        sent_map = {s["idx"]: s for s in sentiments}
+
+        # 종합 센티멘트 스코어
+        scores = [s["score"] for s in sentiments if "score" in s]
+        avg_score = sum(scores) / len(scores) if scores else 0
+
+        # 종합 KPI
+        col_s1, col_s2, col_s3 = st.columns(3)
+        sc_color = "#f87171" if avg_score > 0.5 else ("#34d399" if avg_score < -0.5 else "#94a3b8")
+        sc_label = "달러 강세 우세" if avg_score > 0.5 else ("원화 강세 우세" if avg_score < -0.5 else "혼조세")
+        col_s1.markdown(
+            kpi_card("뉴스 종합 센티멘트",
+                     f'<span style="color:{sc_color}">{avg_score:+.2f}</span>',
+                     f'<span style="color:{sc_color}">{sc_label}</span>'),
+            unsafe_allow_html=True,
+        )
+        col_s2.markdown(
+            kpi_card("수집 뉴스", f"{len(news_list)}건",
+                     f"갱신: {now_kst().strftime('%H:%M')} KST"),
+            unsafe_allow_html=True,
+        )
+        up_cnt   = sum(1 for s in scores if s > 0)
+        down_cnt = sum(1 for s in scores if s < 0)
+        col_s3.markdown(
+            kpi_card("달러↑ / 원화↑",
+                     f'<span class="down">↑{up_cnt}</span> / '
+                     f'<span class="up">↑{down_cnt}</span>',
+                     "뉴스 건수 기준"),
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # 센티멘트 바 차트
+        if scores:
+            fig_s = go.Figure(go.Bar(
+                x=[f"#{i+1}" for i in range(len(scores))],
+                y=scores,
+                marker_color=["#f87171" if s > 0 else ("#34d399" if s < 0 else "#475569")
+                              for s in scores],
+                text=[f"{s:+d}" for s in scores],
+                textposition="outside",
+            ))
+            fig_s.add_hline(y=0, line_color="#475569")
+            fig_s.update_layout(
+                **CHART_BASE, height=200,
+                yaxis=dict(range=[-2.5, 2.5], gridcolor="#1a3050"),
+                xaxis_title="뉴스", yaxis_title="센티멘트 점수",
+                title="뉴스별 USD/KRW 영향도",
+                showlegend=False,
+            )
+            st.plotly_chart(fig_s, use_container_width=True)
+
+        # 뉴스 목록 테이블
+        st.markdown('<div class="sec-hdr">뉴스 상세</div>', unsafe_allow_html=True)
+        for i, art in enumerate(news_list):
+            s = sent_map.get(i + 1, {})
+            score  = s.get("score", 0)
+            reason = s.get("reason", "분석 중")
+            impact = s.get("impact", "중립")
+
+            if score > 0:
+                badge_color = "rgba(248,113,113,.15)"; badge_bc = "#f87171"; arrow = "↑ 달러강세"
+            elif score < 0:
+                badge_color = "rgba(52,211,153,.12)";  badge_bc = "#34d399"; arrow = "↓ 원화강세"
+            else:
+                badge_color = "rgba(71,85,105,.2)";    badge_bc = "#475569"; arrow = "— 중립"
+
+            st.markdown(f"""
+<div style='background:{badge_color};border:1px solid {badge_bc}33;
+border-left:3px solid {badge_bc};border-radius:6px;
+padding:10px 14px;margin-bottom:6px;'>
+  <div style='display:flex;justify-content:space-between;align-items:center;'>
+    <span style='font-size:.82rem;color:#dde6f0;flex:1;margin-right:12px'>{art['title']}</span>
+    <span style='font-family:JetBrains Mono,monospace;font-size:.78rem;color:{badge_bc};
+    white-space:nowrap;font-weight:700'>{score:+d} {arrow}</span>
+  </div>
+  <div style='margin-top:5px;font-size:.7rem;color:#4d7a9f'>
+    {art['source']} · {art['pub']} &nbsp;|&nbsp;
+    <span style='color:{badge_bc}'>{reason}</span>
+    &nbsp;|&nbsp; <a href='{art['link']}' target='_blank'
+    style='color:#2563eb'>원문 ↗</a>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+        # LGB 보정 안내
+        st.markdown('<div class="sec-hdr">예측 보정 안내</div>', unsafe_allow_html=True)
+
+        if abs(avg_score) >= 1.0:
+            bias_pct = avg_score * 0.05   # score 1당 ±0.05%
+            adj_d1   = round(d1_rt * (1 + bias_pct / 100), 2)
+            direction = "달러 강세" if avg_score > 0 else "원화 강세"
+            color     = "#f87171" if avg_score > 0 else "#34d399"
+            st.markdown(f"""
+<div style='background:rgba(37,99,235,.08);border:1px solid rgba(37,99,235,.3);
+border-radius:8px;padding:12px 16px;font-size:.82rem;color:#dde6f0'>
+  📊 <b>뉴스 센티멘트 보정</b><br><br>
+  종합 점수 <span style='color:{color};font-weight:700'>{avg_score:+.2f}</span>
+  → <span style='color:{color}'>{direction}</span> 우세<br>
+  LGB D+1 기본 예측: <b>₩{d1_rt:,.2f}</b><br>
+  뉴스 보정 D+1 참고: <b style='color:{color}'>₩{adj_d1:,.2f}</b>
+  <span style='color:#4d7a9f;font-size:.72rem'>
+  (±{abs(bias_pct):.3f}% 보정 · 참고용)</span>
+</div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+<div style='background:rgba(71,85,105,.15);border:1px solid #1a3050;
+border-radius:8px;padding:12px 16px;font-size:.82rem;color:#7a9dbf'>
+  📊 종합 센티멘트 점수 <b>{avg_score:+.2f}</b> — 혼조세<br>
+  뉴스 신호가 중립적이라 LGB 예측값(₩{d1_rt:,.2f})을 그대로 사용합니다.
+</div>""", unsafe_allow_html=True)
 
 
 # ════════════════════════════════════════════════════════
