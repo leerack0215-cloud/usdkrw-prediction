@@ -690,7 +690,7 @@ with tab2:
         m_data = forecast["models"]["D+1"]
         fig_b  = go.Figure(go.Bar(
             x=list(m_data.keys()), y=list(m_data.values()),
-            marker_color=["#34d399" if v>last_price else "#f87171" for v in m_data.values()],
+            marker_color=["#34d399" if v>cur_price else "#f87171" for v in m_data.values()],
             text=[f"₩{v:,.0f}" for v in m_data.values()], textposition="outside",
         ))
         fig_b.add_hline(y=cur_price, line_dash="dash", line_color="#fbbf24",
