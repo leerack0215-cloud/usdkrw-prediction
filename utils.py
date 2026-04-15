@@ -67,7 +67,6 @@ def collect_data(start: str = "2015-01-01") -> pd.DataFrame:
             raw = yf.download(
                 ticker, start=start, end=end,
                 auto_adjust=True, progress=False,
-                silence_errors=True,
             )
             if raw is None or raw.empty:
                 print(f"  ⚠ {name}: 빈 데이터 — 스킵")
