@@ -414,57 +414,60 @@ else:
 lgb_update_kst = fmt_kst(fetch_time)
 spot_kst       = fmt_kst(spot_time)
 
+# 카운트다운 바 (정적 표시)
 st.markdown(f"""
 <div class="countdown-wrap">
   <span class="countdown-label">🔄 LGB 예측 갱신까지</span>
   <span id="kst-timer" style="font-family:'JetBrains Mono',monospace;
-    font-size:1.1rem;font-weight:700;color:#34d399;
+    font-size:1.1rem;font-weight:700;color:{tc};
     min-width:52px;text-align:center;">{m}:{s:02d}</span>
   <div class="bar-track">
-    <div id="kst-bar" class="bar-fill"
-      style="width:{pct:.1f}%;background:linear-gradient(90deg,#2563eb,#34d399);
-      height:5px;border-radius:99px;"></div>
+    <div id="kst-bar" style="width:{pct:.1f}%;background:{bc};
+      height:5px;border-radius:99px;transition:width 1s linear;"></div>
   </div>
   <span class="last-update">
     🟢 LGB: {lgb_update_kst} KST &nbsp;|&nbsp;
     💱 현재가({spot_src}): {spot_kst} KST
   </span>
-</div>
+</div>""", unsafe_allow_html=True)
+
+# JS 카운트다운 — st.components.v1.html() 사용 (script 차단 우회)
+import streamlit.components.v1 as _stc
+_stc.html(f"""
 <script>
-(function(){{
-  var remain  = {remain};
-  var ttl     = {TTL_SEC};
-  var timerEl = document.getElementById('kst-timer');
-  var barEl   = document.getElementById('kst-bar');
+var remain = {remain};
+var ttl    = {TTL_SEC};
 
-  function tick(){{
-    if(!timerEl || !barEl) return;
-    var m = Math.floor(remain/60);
+function tick() {{
+  var parentDoc = window.parent.document;
+  var timerEl = parentDoc.getElementById('kst-timer');
+  var barEl   = parentDoc.getElementById('kst-bar');
+
+  if (timerEl) {{
+    var m = Math.floor(remain / 60);
     var s = remain % 60;
-    timerEl.textContent = m + ':' + (s<10?'0':'') + s;
-
-    var pct = (remain/ttl)*100;
-    barEl.style.width = pct + '%';
-
-    if(remain <= 30){{
-      timerEl.style.color='#f87171';
-      barEl.style.background='linear-gradient(90deg,#dc2626,#f87171)';
-    }} else if(remain <= 90){{
-      timerEl.style.color='#f59e0b';
-      barEl.style.background='linear-gradient(90deg,#d97706,#f59e0b)';
-    }}
-
-    if(remain <= 0){{
-      window.location.reload();
-      return;
-    }}
-    remain--;
-    setTimeout(tick, 1000);
+    timerEl.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+    if (remain <= 30) timerEl.style.color = '#f87171';
+    else if (remain <= 90) timerEl.style.color = '#f59e0b';
+    else timerEl.style.color = '#34d399';
   }}
+  if (barEl) {{
+    barEl.style.width = (remain / ttl * 100) + '%';
+    if (remain <= 30) barEl.style.background = 'linear-gradient(90deg,#dc2626,#f87171)';
+    else if (remain <= 90) barEl.style.background = 'linear-gradient(90deg,#d97706,#f59e0b)';
+    else barEl.style.background = 'linear-gradient(90deg,#2563eb,#34d399)';
+  }}
+
+  if (remain <= 0) {{
+    window.parent.location.reload();
+    return;
+  }}
+  remain--;
   setTimeout(tick, 1000);
-}})();
+}}
+setTimeout(tick, 1000);
 </script>
-""", unsafe_allow_html=True)
+""", height=0)
 
 if remain <= 0:
     st.cache_data.clear()
@@ -1212,36 +1215,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── 카운트다운 + 자동 갱신 (JS) ─────────────────────
-# Streamlit Cloud는 meta refresh 미지원 → JS setTimeout 사용
-# 30초마다 window.location.reload() → 환율/예측 갱신
-_remain_sec = remain   # 현재 LGB 캐시 남은 시간
-st.markdown(f"""
-<div id="cd-footer" style="text-align:center;font-family:'JetBrains Mono',monospace;
-font-size:.72rem;color:#2a4060;padding:4px">
-  ⏱ 다음 갱신: <span id="cd-sec" style="color:#34d399">30</span>초
-</div>
+# 30초마다 자동 새로고침 (환율 + 예측 갱신)
+import streamlit.components.v1 as _stc2
+_stc2.html("""
 <script>
-(function(){{
-  var refreshSec = 30;
-  var remain = {_remain_sec};
-  var el = document.getElementById('cd-sec');
-
-  // 카운트다운 표시
-  var t = setInterval(function(){{
-    refreshSec--;
-    if(el) el.textContent = refreshSec;
-    if(refreshSec <= 0){{
-      clearInterval(t);
-      window.location.reload();
-    }}
-  }}, 1000);
-
-  // LGB 캐시 만료 시 즉시 갱신
-  if(remain <= 0){{
-    window.location.reload();
-  }}
-}})();
+setTimeout(function() {
+  window.parent.location.reload();
+}, 30000);
 </script>
-""", unsafe_allow_html=True)
+""", height=0)
 
