@@ -181,51 +181,49 @@ def kpi_card(label, value, delta_html=""):
 
 def get_spot_rate() -> tuple:
     """
-    실시간 USD/KRW 현재가 — 캐시 없음, 매 rerun마다 직접 호출
-    소스 우선순위:
-      1. ExchangeRate-API (실시간, 야간/주말 포함)
-      2. Frankfurter API  (대체)
-      3. yfinance 1분봉   (폴백)
-    반환: (가격, 소스명, 수집시각)
+    실시간 USD/KRW — yfinance 1분봉 우선
+    open.er-api.com은 하루 1회 업데이트라 실시간 아님
     """
-    import requests
+    import datetime as dt
 
-    # 1순위
+    # 1순위: yfinance 1분봉 (실제 분 단위 갱신)
     try:
+        import yfinance as yf
+        h = yf.Ticker("KRW=X").history(period="1d", interval="1m")
+        if not h.empty and len(h) > 0:
+            price = float(h["Close"].iloc[-1])
+            ts    = h.index[-1]
+            if hasattr(ts, "to_pydatetime"):
+                ts = ts.to_pydatetime()
+            if price > 100:
+                return price, f"yfinance 1m ({ts.strftime('%H:%M')})", dt.datetime.now()
+    except Exception:
+        pass
+
+    # 2순위: yfinance 기본 (폴백)
+    try:
+        import yfinance as yf
+        h = yf.Ticker("KRW=X").history(period="5d")
+        if not h.empty:
+            price = float(h["Close"].iloc[-1])
+            if price > 100:
+                return price, "yfinance(일봉)", dt.datetime.now()
+    except Exception:
+        pass
+
+    # 3순위: ExchangeRate-API (하루 1회지만 최후 폴백)
+    try:
+        import requests
         r = requests.get("https://open.er-api.com/v6/latest/USD", timeout=4)
         d = r.json()
         if d.get("result") == "success":
             price = float(d["rates"]["KRW"])
-            if price > 0:
-                return price, "ExchangeRate-API", datetime.datetime.now()
+            if price > 100:
+                return price, "ExchangeRate-API(1일1회)", dt.datetime.now()
     except Exception:
         pass
 
-    # 2순위
-    try:
-        r = requests.get(
-            "https://api.frankfurter.app/latest?from=USD&to=KRW", timeout=4
-        )
-        d = r.json()
-        if "rates" in d and "KRW" in d["rates"]:
-            price = float(d["rates"]["KRW"])
-            if price > 0:
-                return price, "Frankfurter", datetime.datetime.now()
-    except Exception:
-        pass
-
-    # 3순위
-    try:
-        import yfinance as yf
-        h = yf.Ticker("KRW=X").history(period="1d", interval="1m")
-        if not h.empty:
-            price = float(h["Close"].iloc[-1])
-            if price > 0:
-                return price, "yfinance", datetime.datetime.now()
-    except Exception:
-        pass
-
-    return 0.0, "수집실패", datetime.datetime.now()
+    return 0.0, "수집실패", dt.datetime.now()
 
 
 @st.cache_data(ttl=300)
