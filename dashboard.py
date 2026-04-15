@@ -24,6 +24,20 @@ from utils import (
     SEQ_LEN, OUTPUT_DIR, MODELS_DIR, CLIP_BOUNDS,
 )
 
+# ── 한국시간 (KST = UTC+9) ────────────────────────────
+KST = datetime.timezone(datetime.timedelta(hours=9))
+
+def now_kst() -> datetime.datetime:
+    return datetime.datetime.now(KST)
+
+def fmt_kst(dt_obj) -> str:
+    """datetime → KST 문자열 (HH:MM:SS)"""
+    if dt_obj is None:
+        return "N/A"
+    if dt_obj.tzinfo is None:
+        dt_obj = dt_obj.replace(tzinfo=KST)
+    return dt_obj.astimezone(KST).strftime("%H:%M:%S")
+
 # ════════════════════════════════════════════════════════
 # 페이지 설정
 # ════════════════════════════════════════════════════════
@@ -182,36 +196,34 @@ def kpi_card(label, value, delta_html=""):
 def get_spot_rate() -> tuple:
     """
     실시간 USD/KRW — yfinance 1분봉 우선
-    open.er-api.com은 하루 1회 업데이트라 실시간 아님
+    반환: (가격, 소스명, KST 수집시각)
     """
-    import datetime as dt
-
-    # 1순위: yfinance 1분봉 (실제 분 단위 갱신)
+    # 1순위: yfinance 1분봉
     try:
         import yfinance as yf
         h = yf.Ticker("KRW=X").history(period="1d", interval="1m")
-        if not h.empty and len(h) > 0:
+        if not h.empty:
             price = float(h["Close"].iloc[-1])
             ts    = h.index[-1]
             if hasattr(ts, "to_pydatetime"):
                 ts = ts.to_pydatetime()
             if price > 100:
-                return price, f"yfinance 1m ({ts.strftime('%H:%M')})", dt.datetime.now()
+                return price, f"yfinance 1m", now_kst()
     except Exception:
         pass
 
-    # 2순위: yfinance 기본 (폴백)
+    # 2순위: yfinance 일봉
     try:
         import yfinance as yf
         h = yf.Ticker("KRW=X").history(period="5d")
         if not h.empty:
             price = float(h["Close"].iloc[-1])
             if price > 100:
-                return price, "yfinance(일봉)", dt.datetime.now()
+                return price, "yfinance 일봉", now_kst()
     except Exception:
         pass
 
-    # 3순위: ExchangeRate-API (하루 1회지만 최후 폴백)
+    # 3순위: ExchangeRate-API (하루 1회)
     try:
         import requests
         r = requests.get("https://open.er-api.com/v6/latest/USD", timeout=4)
@@ -219,11 +231,11 @@ def get_spot_rate() -> tuple:
         if d.get("result") == "success":
             price = float(d["rates"]["KRW"])
             if price > 100:
-                return price, "ExchangeRate-API(1일1회)", dt.datetime.now()
+                return price, "ExchangeRate-API(1일1회)", now_kst()
     except Exception:
         pass
 
-    return 0.0, "수집실패", dt.datetime.now()
+    return 0.0, "수집실패", now_kst()
 
 
 @st.cache_data(ttl=300)
@@ -265,13 +277,13 @@ def get_realtime():
                 lr   = float(np.clip(model.predict(last_flat)[0], -clip, clip))
                 preds[HORIZON_LABELS[h]] = round(last_price * np.exp(lr), 2)
 
-        return df["USDKRW"], preds, df, datetime.datetime.now()
+        return df["USDKRW"], preds, df, now_kst()
 
     except Exception as e:
         st.warning(f"데이터 로드 오류: {e}")
         idx    = pd.date_range(end=datetime.date.today(), periods=500, freq="B")
         prices = 1380 + np.cumsum(np.random.default_rng(42).normal(0, 3, 500))
-        return pd.Series(prices, index=idx, name="USDKRW"), {}, pd.DataFrame(), datetime.datetime.now()
+        return pd.Series(prices, index=idx, name="USDKRW"), {}, pd.DataFrame(), now_kst()
 
 
 @st.cache_data(ttl=300)
@@ -402,18 +414,23 @@ st.info(
     f"spot_src={spot_src}  |  "
     f"yfinance_last={yf_last:.2f}  |  "
     f"cur_price={cur_price:.2f}  |  "
-    f"시각={spot_time.strftime('%H:%M:%S')}"
+    f"KST={fmt_kst(spot_time)}"
 )
 
 # ════════════════════════════════════════════════════════
-# 카운트다운 바
+# 카운트다운 바 (KST 기준)
 # ════════════════════════════════════════════════════════
 
-TTL_SEC = 300
-now     = datetime.datetime.now()
-elapsed = int((now - fetch_time).total_seconds())
-remain  = max(TTL_SEC - elapsed, 0)
-pct     = remain / TTL_SEC * 100
+TTL_SEC    = 300
+now_k      = now_kst()
+# fetch_time이 KST aware이면 그대로, naive이면 KST로 간주
+ft = fetch_time
+if ft.tzinfo is None:
+    ft = ft.replace(tzinfo=KST)
+elapsed    = int((now_k - ft).total_seconds())
+elapsed    = max(0, min(elapsed, TTL_SEC))   # 음수/초과 방지
+remain     = TTL_SEC - elapsed
+pct        = remain / TTL_SEC * 100
 m = remain // 60
 s = remain % 60
 
@@ -424,17 +441,22 @@ elif remain <= 90:
 else:
     tc = "#34d399"; bc = "linear-gradient(90deg,#2563eb,#34d399)"
 
+lgb_update_kst = fmt_kst(fetch_time)   # LGB 예측 마지막 갱신 (KST)
+spot_kst       = fmt_kst(spot_time)    # 현재가 수집 시각 (KST)
+
 st.markdown(f"""
 <div class="countdown-wrap">
-  <span class="countdown-label">🔄 예측 갱신까지</span>
+  <span class="countdown-label">🔄 LGB 예측 갱신까지</span>
   <span style="font-family:'JetBrains Mono',monospace;font-size:1.1rem;font-weight:700;color:{tc};min-width:52px;text-align:center;">{m}:{s:02d}</span>
   <div class="bar-track">
     <div class="bar-fill" style="width:{pct:.1f}%;background:{bc};height:5px;border-radius:99px;"></div>
   </div>
-  <span class="last-update">현재가: {spot_src} | 갱신: {spot_time.strftime('%H:%M:%S')}</span>
+  <span class="last-update">
+    🟢 LGB 예측: {lgb_update_kst} KST &nbsp;|&nbsp;
+    💱 현재가({spot_src}): {spot_kst} KST
+  </span>
 </div>""", unsafe_allow_html=True)
 
-# 5분 만료 시 캐시 초기화
 if remain <= 0:
     st.cache_data.clear()
 
@@ -921,7 +943,7 @@ st.markdown(
     f"<div style='text-align:center;color:#2a4060;font-size:.7rem;"
     f"font-family:JetBrains Mono,monospace;letter-spacing:1px;padding:8px'>"
     f"USD/KRW DEEP LEARNING PREDICTION SYSTEM &nbsp;|&nbsp; "
-    f"UPDATED {spot_time.strftime('%Y-%m-%d %H:%M:%S')} KST &nbsp;|&nbsp; "
+    f"UPDATED {now_kst().strftime('%Y-%m-%d %H:%M:%S')} KST &nbsp;|&nbsp; "
     f"FOR ACADEMIC USE ONLY</div>",
     unsafe_allow_html=True,
 )
