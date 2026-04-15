@@ -341,7 +341,7 @@ with st.sidebar:
     period_days = {"최근 90일":90,"최근 180일":180,
                    "최근 1년":365,"최근 2년":730,"전체":9999}[period]
     st.markdown("---")
-    if st.button("🔄 데이터 갱신", use_container_width=True):
+    if st.button("🔄 데이터 갱신", width="stretch"):
         st.cache_data.clear()
         st.rerun()
     st.markdown("---")
@@ -550,7 +550,7 @@ with tab1:
     )
     # 가격 y축 범위 별도 설정 (CHART_BASE와 충돌 방지)
     fig.update_yaxes(range=[y_min, y_max], row=1, col=1)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # 기술 지표 + 수익률 요약
     c1, c2 = st.columns(2)
@@ -590,7 +590,7 @@ with tab1:
             text=[f"{v:+.2f}%" for v in ret_vals], textposition="outside",
         ))
         ret_fig.update_layout(**CHART_BASE, height=220, showlegend=False)
-        st.plotly_chart(ret_fig, use_container_width=True)
+        st.plotly_chart(ret_fig, width="stretch")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -621,7 +621,7 @@ with tab2:
                     "변화율":   f"{pct:+.2f}%",
                     "방향":     "↑ 상승" if pct>0 else ("↓ 하락" if pct<0 else "— 보합"),
                 })
-            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
         else:
             st.markdown(
                 '<div class="warn">⚠ LGB 모델 없음 — Colab에서 train.py 실행 후 push 필요</div>',
@@ -643,7 +643,7 @@ with tab2:
                     "변화율":   f"{data['change_pct']:+.2f}%",
                     "방향":     data["direction"],
                 })
-            st.dataframe(pd.DataFrame(rows2), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(rows2), hide_index=True, width="stretch")
             st.caption(
                 f"기준일: {forecast.get('last_date','N/A')} | "
                 f"기준 환율: ₩{forecast.get('last_close',0):,.2f}"
@@ -682,7 +682,7 @@ with tab2:
             **CHART_BASE, height=320,
             xaxis_title="영업일", yaxis_title="USD/KRW (원)",
         )
-        st.plotly_chart(fig_fan, use_container_width=True)
+        st.plotly_chart(fig_fan, width="stretch")
 
     # 모델별 D+1 비교
     if forecast and "models" in forecast and "D+1" in forecast["models"]:
@@ -697,7 +697,7 @@ with tab2:
                         annotation_text=f"현재 ₩{cur_price:,.0f}")
         fig_b.update_layout(**CHART_BASE, height=280, showlegend=False,
                             yaxis_title="예측 환율 (원)")
-        st.plotly_chart(fig_b, use_container_width=True)
+        st.plotly_chart(fig_b, width="stretch")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -728,7 +728,7 @@ with tab3:
 
     st.dataframe(
         disp.style.apply(highlight_best, axis=None).format("{:.3f}"),
-        use_container_width=True,
+        width="stretch",
     )
 
     c1, c2 = st.columns(2)
@@ -757,7 +757,7 @@ with tab3:
             ),
             title="모델 성능 레이더",
         )
-        st.plotly_chart(fig_r, use_container_width=True)
+        st.plotly_chart(fig_r, width="stretch")
 
     with c2:
         fig_b2 = go.Figure()
@@ -770,7 +770,7 @@ with tab3:
                 ))
         fig_b2.update_layout(**CHART_BASE, barmode="group", height=320,
                              yaxis_title="원화 (원)", title="RMSE / MAE")
-        st.plotly_chart(fig_b2, use_container_width=True)
+        st.plotly_chart(fig_b2, width="stretch")
 
     # 목표 달성
     st.markdown('<div class="sec-hdr">성능 목표 달성 현황</div>', unsafe_allow_html=True)
@@ -815,7 +815,7 @@ with tab4:
         fig_m.update_layout(**CHART_BASE, height=380,
                             yaxis_title="상대 지수 (시작=1.0)",
                             title="주요 지표 상대 성과")
-        st.plotly_chart(fig_m, use_container_width=True)
+        st.plotly_chart(fig_m, width="stretch")
 
         # 상관관계
         krw_sub = krw_series.reindex(macro_df.index).ffill()
@@ -831,7 +831,7 @@ with tab4:
         ))
         fig_c.update_layout(**CHART_BASE, height=350,
                             title="일간 수익률 상관계수")
-        st.plotly_chart(fig_c, use_container_width=True)
+        st.plotly_chart(fig_c, width="stretch")
 
         # 스냅샷
         st.markdown('<div class="sec-hdr">현재 스냅샷</div>', unsafe_allow_html=True)
@@ -908,7 +908,7 @@ with tab5:
         ))
         fig_eq.update_layout(**CHART_BASE, height=300,
                              yaxis_title="자산 (억원)", title="누적 자산 곡선")
-        st.plotly_chart(fig_eq, use_container_width=True)
+        st.plotly_chart(fig_eq, width="stretch")
 
         dd     = (equity - np.maximum.accumulate(equity)) / np.maximum.accumulate(equity) * 100
         fig_dd = go.Figure(go.Scatter(
@@ -918,7 +918,7 @@ with tab5:
         ))
         fig_dd.update_layout(**CHART_BASE, height=200,
                              yaxis_title="%", title="Drawdown")
-        st.plotly_chart(fig_dd, use_container_width=True)
+        st.plotly_chart(fig_dd, width="stretch")
 
         st.markdown(
             '<div class="warn">⚠ 백테스팅 결과는 과거 수익을 보장하지 않습니다. '
@@ -1092,7 +1092,7 @@ with tab6:
                 title="뉴스별 USD/KRW 영향도",
                 showlegend=False,
             )
-            st.plotly_chart(fig_s, use_container_width=True)
+            st.plotly_chart(fig_s, width="stretch")
 
         # 뉴스 목록 테이블
         st.markdown('<div class="sec-hdr">뉴스 상세</div>', unsafe_allow_html=True)
@@ -1168,10 +1168,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── 30초마다 전체 rerun ───────────────────────────────
-# get_spot_rate()는 캐시 없음 → rerun 시 항상 API 새로 호출
-# get_realtime()은 ttl=300 → 5분마다만 실제 갱신
-import time as _t
-_t.sleep(30)
-st.rerun()
+# ── 30초마다 자동 갱신 (Streamlit Cloud 호환) ────────
+# sleep+rerun 대신 meta refresh 사용 → 탭/스크롤 유지
+st.markdown(
+    '<meta http-equiv="refresh" content="30">',
+    unsafe_allow_html=True,
+)
 
