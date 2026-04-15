@@ -385,94 +385,85 @@ st.markdown("""
 </div>""", unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════
-# 카운트다운 바 — fragment로 1초마다 독립 갱신
+# 실시간 현재가 수집 (매 rerun마다 직접 호출, 캐시 없음)
 # ════════════════════════════════════════════════════════
 
-@st.fragment(run_every=1)
-def countdown_bar():
-    TTL_SEC = 300
-    now     = datetime.datetime.now()
-    elapsed = int((now - fetch_time).total_seconds())
-    remain  = max(TTL_SEC - elapsed, 0)
-    pct     = remain / TTL_SEC * 100
-    m = remain // 60
-    s = remain % 60
+spot_price, spot_src, spot_time = get_spot_rate()
+cur_price = spot_price if spot_price > 0 else (
+    float(krw_series.iloc[-1]) if len(krw_series) > 0 else 1482.0
+)
+prev_price  = float(krw_series.iloc[-2]) if len(krw_series) > 1 else cur_price
+day_chg     = cur_price - prev_price
+day_chg_pct = day_chg / prev_price * 100 if prev_price else 0
 
-    if remain <= 30:
-        tc = "#f87171"; bc = "linear-gradient(90deg,#dc2626,#f87171)"
-    elif remain <= 90:
-        tc = "#f59e0b"; bc = "linear-gradient(90deg,#d97706,#f59e0b)"
-    else:
-        tc = "#34d399"; bc = "linear-gradient(90deg,#2563eb,#34d399)"
+# ════════════════════════════════════════════════════════
+# 카운트다운 바
+# ════════════════════════════════════════════════════════
 
-    st.markdown(f"""
+TTL_SEC = 300
+now     = datetime.datetime.now()
+elapsed = int((now - fetch_time).total_seconds())
+remain  = max(TTL_SEC - elapsed, 0)
+pct     = remain / TTL_SEC * 100
+m = remain // 60
+s = remain % 60
+
+if remain <= 30:
+    tc = "#f87171"; bc = "linear-gradient(90deg,#dc2626,#f87171)"
+elif remain <= 90:
+    tc = "#f59e0b"; bc = "linear-gradient(90deg,#d97706,#f59e0b)"
+else:
+    tc = "#34d399"; bc = "linear-gradient(90deg,#2563eb,#34d399)"
+
+st.markdown(f"""
 <div class="countdown-wrap">
   <span class="countdown-label">🔄 예측 갱신까지</span>
   <span style="font-family:'JetBrains Mono',monospace;font-size:1.1rem;font-weight:700;color:{tc};min-width:52px;text-align:center;">{m}:{s:02d}</span>
   <div class="bar-track">
     <div class="bar-fill" style="width:{pct:.1f}%;background:{bc};height:5px;border-radius:99px;"></div>
   </div>
-  <span class="last-update">예측 기준: {fetch_time.strftime('%H:%M:%S')}</span>
+  <span class="last-update">현재가: {spot_src} | 갱신: {spot_time.strftime('%H:%M:%S')}</span>
 </div>""", unsafe_allow_html=True)
 
-    if remain <= 0:
-        st.cache_data.clear()
-        st.rerun()
-
-countdown_bar()
-
+# 5분 만료 시 캐시 초기화
+if remain <= 0:
+    st.cache_data.clear()
 
 # ════════════════════════════════════════════════════════
-# KPI 카드 — 현재가는 fragment로 독립 갱신
+# KPI 카드
 # ════════════════════════════════════════════════════════
 
-@st.fragment(run_every=60)   # 60초마다 이 블록만 재실행
-def live_price_kpi():
-    """현재가만 독립적으로 갱신 — 탭/차트에 영향 없음"""
-    spot_price, spot_src, spot_time = get_spot_rate()
-    cur = spot_price if spot_price > 0 else (
-        float(krw_series.iloc[-1]) if len(krw_series) > 0 else 1482.0
-    )
-    prev = float(krw_series.iloc[-2]) if len(krw_series) > 1 else cur
-    chg     = cur - prev
-    chg_pct = chg / prev * 100 if prev else 0
-    cls = "up" if chg >= 0 else "down"
-    sym = "▲" if chg >= 0 else "▼"
-    t   = spot_time.strftime("%H:%M:%S")
+d1_rt = rt_preds.get("D+1", cur_price)
+d3_rt = rt_preds.get("D+3", cur_price)
 
-    d1  = rt_preds.get("D+1", cur)
-    d3  = rt_preds.get("D+3", cur)
+yr      = krw_series[krw_series.index >= krw_series.index[-1] - pd.Timedelta(days=365)]
+yr_high = float(yr.max()) if len(yr) > 0 else cur_price
+yr_low  = float(yr.min()) if len(yr) > 0 else cur_price
+vol_21  = (
+    float(krw_series.pct_change().rolling(21).std().iloc[-1] * 100 * np.sqrt(252))
+    if len(krw_series) > 21 else 0.0
+)
+chg_cls = "up" if day_chg >= 0 else "down"
+chg_sym = "▲" if day_chg >= 0 else "▼"
 
-    yr      = krw_series[krw_series.index >= krw_series.index[-1] - pd.Timedelta(days=365)]
-    yr_high = float(yr.max()) if len(yr) > 0 else cur
-    yr_low  = float(yr.min()) if len(yr) > 0 else cur
-    vol_21  = (
-        float(krw_series.pct_change().rolling(21).std().iloc[-1] * 100 * np.sqrt(252))
-        if len(krw_series) > 21 else 0.0
-    )
-
-    cols = st.columns(5)
-    rows = [
-        (f"현재 환율 ({spot_src})",
-         f"₩{cur:,.2f}",
-         f'<span class="{cls}">{sym} {abs(chg):.2f}원 ({abs(chg_pct):.2f}%) · {t}</span>'),
-        ("D+1 예측 🟢실시간",
-         f"₩{d1:,.2f}",
-         f'<span class="{"up" if d1>cur else "down"}">{"↑" if d1>cur else "↓"} {abs((d1/cur-1)*100):.2f}%</span>'),
-        ("D+3 예측 🟢실시간",
-         f"₩{d3:,.2f}",
-         f'<span class="{"up" if d3>cur else "down"}">{"↑" if d3>cur else "↓"} {abs((d3/cur-1)*100):.2f}%</span>'),
-        ("52주 고/저",
-         f"₩{yr_high:,.0f}",
-         f'<span class="down">LOW ₩{yr_low:,.0f}</span>'),
-        ("연환산 변동성",
-         f"{vol_21:.1f}%", ""),
-    ]
-    for col, (lbl, val, delta) in zip(cols, rows):
-        col.markdown(kpi_card(lbl, val, delta), unsafe_allow_html=True)
-
-live_price_kpi()
-
+kpi_rows = [
+    (f"현재 환율 ({spot_src})",
+     f"₩{cur_price:,.2f}",
+     f'<span class="{chg_cls}">{chg_sym} {abs(day_chg):.2f}원 ({abs(day_chg_pct):.2f}%)</span>'),
+    ("D+1 예측 🟢실시간",
+     f"₩{d1_rt:,.2f}",
+     f'<span class="{"up" if d1_rt>cur_price else "down"}">{"↑" if d1_rt>cur_price else "↓"} {abs((d1_rt/cur_price-1)*100):.2f}%</span>'),
+    ("D+3 예측 🟢실시간",
+     f"₩{d3_rt:,.2f}",
+     f'<span class="{"up" if d3_rt>cur_price else "down"}">{"↑" if d3_rt>cur_price else "↓"} {abs((d3_rt/cur_price-1)*100):.2f}%</span>'),
+    ("52주 고/저",
+     f"₩{yr_high:,.0f}",
+     f'<span class="down">LOW ₩{yr_low:,.0f}</span>'),
+    ("연환산 변동성", f"{vol_21:.1f}%", ""),
+]
+cols = st.columns(5)
+for col, (lbl, val, delta) in zip(cols, kpi_rows):
+    col.markdown(kpi_card(lbl, val, delta), unsafe_allow_html=True)
 
 
 # ════════════════════════════════════════════════════════
@@ -921,7 +912,15 @@ st.markdown(
     f"<div style='text-align:center;color:#2a4060;font-size:.7rem;"
     f"font-family:JetBrains Mono,monospace;letter-spacing:1px;padding:8px'>"
     f"USD/KRW DEEP LEARNING PREDICTION SYSTEM &nbsp;|&nbsp; "
-    f"UPDATED {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} KST &nbsp;|&nbsp; "
+    f"UPDATED {spot_time.strftime('%Y-%m-%d %H:%M:%S')} KST &nbsp;|&nbsp; "
     f"FOR ACADEMIC USE ONLY</div>",
     unsafe_allow_html=True,
 )
+
+# ── 30초마다 전체 rerun ───────────────────────────────
+# get_spot_rate()는 캐시 없음 → rerun 시 항상 API 새로 호출
+# get_realtime()은 ttl=300 → 5분마다만 실제 갱신
+import time as _t
+_t.sleep(30)
+st.rerun()
+
