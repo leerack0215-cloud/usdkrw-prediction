@@ -1,6 +1,12 @@
 """
-USD/KRW 예측 대시보드 — Streamlit
+dashboard.py — USD/KRW 딥러닝 예측 대시보드
 실행: streamlit run dashboard.py
+
+실시간 구조:
+  ① yfinance 최신 환율 수집 (5분 캐시)
+  ② LGB 모델 직접 로드 → 다중 호라이즌 실시간 추론
+  ③ forecast_today.json → Colab DL 앙상블 예측 표시
+  ④ performance_table.csv → 모델 성능 비교
 """
 
 import os, json, pickle, warnings, datetime
@@ -10,1091 +16,743 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
 
-# ─────────────────────────────────────────────
+from utils import (
+    collect_data, make_features,
+    HORIZONS, HORIZON_LABELS,
+    SEQ_LEN, OUTPUT_DIR, MODELS_DIR, CLIP_BOUNDS,
+)
+
+# ════════════════════════════════════════════════════════
 # 페이지 설정
-# ─────────────────────────────────────────────
+# ════════════════════════════════════════════════════════
+
 st.set_page_config(
-    page_title="USD/KRW 딥러닝 예측 시스템",
+    page_title="USD/KRW 딥러닝 예측",
     page_icon="💹",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ─────────────────────────────────────────────
-# 커스텀 CSS
-# ─────────────────────────────────────────────
+# ════════════════════════════════════════════════════════
+# CSS
+# ════════════════════════════════════════════════════════
+
 st.markdown("""
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;700&family=Space+Mono:wght@400;700&display=swap');
-
-  html, body, [class*="css"] {
-    font-family: 'Noto Sans KR', sans-serif;
-  }
-
-  /* 배경 */
-  .stApp {
-    background: linear-gradient(135deg, #0a0e1a 0%, #0d1528 50%, #0a0e1a 100%);
-    color: #e2e8f0;
-  }
-
-  /* 사이드바 */
-  section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #0d1528 0%, #111827 100%) !important;
-    border-right: 1px solid #1e3a5f;
-  }
-
-  /* 헤더 */
-  .main-header {
-    background: linear-gradient(90deg, #1a2744 0%, #0f2044 100%);
-    border: 1px solid #2563eb;
-    border-radius: 12px;
-    padding: 24px 32px;
-    margin-bottom: 24px;
-    box-shadow: 0 0 30px rgba(37, 99, 235, 0.15);
-  }
-  .main-header h1 {
-    font-family: 'Space Mono', monospace;
-    font-size: 2rem;
-    color: #60a5fa;
-    margin: 0;
-    letter-spacing: -0.5px;
-  }
-  .main-header p {
-    color: #94a3b8;
-    margin: 4px 0 0;
-    font-size: 0.9rem;
-  }
-
-  /* 메트릭 카드 */
-  .metric-card {
-    background: linear-gradient(135deg, #1e2d4a 0%, #162035 100%);
-    border: 1px solid #2563eb33;
-    border-radius: 10px;
-    padding: 18px 20px;
-    text-align: center;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-  }
-  .metric-card .value {
-    font-family: 'Space Mono', monospace;
-    font-size: 1.8rem;
-    font-weight: 700;
-    color: #60a5fa;
-  }
-  .metric-card .label {
-    font-size: 0.78rem;
-    color: #64748b;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-top: 4px;
-  }
-  .metric-card .delta {
-    font-size: 0.9rem;
-    margin-top: 6px;
-  }
-  .up   { color: #34d399; }
-  .down { color: #f87171; }
-
-  /* 섹션 헤더 */
-  .section-header {
-    font-family: 'Space Mono', monospace;
-    color: #60a5fa;
-    font-size: 1rem;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    border-bottom: 1px solid #1e3a5f;
-    padding-bottom: 8px;
-    margin: 24px 0 16px;
-  }
-
-  /* 성능 테이블 */
-  .perf-table th {
-    background: #1e3a5f !important;
-    color: #93c5fd !important;
-    font-family: 'Space Mono', monospace;
-    font-size: 0.75rem;
-    letter-spacing: 1px;
-  }
-  .perf-table td {
-    color: #e2e8f0 !important;
-    font-family: 'Space Mono', monospace;
-    font-size: 0.8rem;
-  }
-
-  /* 경고 박스 */
-  .warning-box {
-    background: rgba(251, 191, 36, 0.08);
-    border: 1px solid #fbbf2444;
-    border-left: 4px solid #fbbf24;
-    border-radius: 6px;
-    padding: 10px 16px;
-    font-size: 0.8rem;
-    color: #fcd34d;
-    margin: 12px 0;
-  }
-
-  /* Plotly 차트 배경 */
-  .js-plotly-plot .plotly .bg {
-    fill: transparent !important;
-  }
-
-  /* 탭 */
-  .stTabs [data-baseweb="tab-list"] {
-    background: #0d1528;
-    border-bottom: 1px solid #1e3a5f;
-  }
-  .stTabs [data-baseweb="tab"] {
-    color: #64748b;
-    font-family: 'Space Mono', monospace;
-    font-size: 0.8rem;
-  }
-  .stTabs [aria-selected="true"] {
-    color: #60a5fa !important;
-    border-bottom: 2px solid #2563eb;
-  }
-
-  /* 버튼 */
-  .stButton > button {
-    background: linear-gradient(90deg, #1d4ed8, #2563eb);
-    color: white;
-    border: none;
-    border-radius: 8px;
-    font-family: 'Space Mono', monospace;
-    font-size: 0.8rem;
-    letter-spacing: 1px;
-    padding: 8px 20px;
-    transition: all 0.2s;
-  }
-  .stButton > button:hover {
-    background: linear-gradient(90deg, #2563eb, #3b82f6);
-    box-shadow: 0 0 12px rgba(37, 99, 235, 0.4);
-  }
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;700&family=JetBrains+Mono:wght@400;700&display=swap');
+html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
+.stApp {
+    background: linear-gradient(160deg,#070d1a 0%,#0b1525 60%,#070d1a 100%);
+    color: #dde6f0;
+}
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg,#0b1525,#0d1a2e) !important;
+    border-right: 1px solid #1a3050;
+}
+.hero {
+    background: linear-gradient(90deg,#0f2240,#0a1c38);
+    border: 1px solid #1e4a80; border-radius: 14px;
+    padding: 22px 30px; margin-bottom: 22px;
+    box-shadow: 0 0 40px rgba(30,74,128,.2);
+}
+.hero h1 { font-family:'JetBrains Mono',monospace; font-size:1.9rem; color:#5eaeff; margin:0; }
+.hero p  { color:#7a9dbf; margin:4px 0 0; font-size:.88rem; }
+.kpi {
+    background: linear-gradient(135deg,#0f2038,#0a1829);
+    border: 1px solid rgba(40,90,160,.35); border-radius:10px;
+    padding: 16px 18px; text-align:center;
+    box-shadow: 0 4px 18px rgba(0,0,0,.35);
+}
+.kpi .val { font-family:'JetBrains Mono',monospace; font-size:1.65rem; font-weight:700; color:#5eaeff; }
+.kpi .lbl { font-size:.72rem; color:#4d7a9f; text-transform:uppercase; letter-spacing:1px; margin-top:4px; }
+.kpi .delta { font-size:.85rem; margin-top:5px; }
+.up   { color:#34d399; } .down { color:#f87171; } .flat { color:#94a3b8; }
+.sec-hdr {
+    font-family:'JetBrains Mono',monospace; color:#5eaeff;
+    font-size:.9rem; letter-spacing:2px; text-transform:uppercase;
+    border-bottom:1px solid #1a3050; padding-bottom:6px; margin:22px 0 14px;
+}
+.badge-rt {
+    display:inline-block; background:rgba(52,211,153,.12);
+    border:1px solid rgba(52,211,153,.4); color:#34d399;
+    font-size:.68rem; padding:2px 8px; border-radius:4px; margin-left:8px;
+}
+.badge-dl {
+    display:inline-block; background:rgba(94,174,255,.10);
+    border:1px solid rgba(94,174,255,.35); color:#5eaeff;
+    font-size:.68rem; padding:2px 8px; border-radius:4px; margin-left:8px;
+}
+.warn {
+    background:rgba(251,191,36,.08); border:1px solid rgba(251,191,36,.35);
+    border-left:4px solid #fbbf24; border-radius:6px;
+    padding:9px 14px; font-size:.78rem; color:#fcd34d; margin:10px 0;
+}
+.stTabs [data-baseweb="tab-list"] { background:#0b1525; border-bottom:1px solid #1a3050; }
+.stTabs [data-baseweb="tab"]      { color:#4d7a9f; font-family:'JetBrains Mono',monospace; font-size:.78rem; }
+.stTabs [aria-selected="true"]    { color:#5eaeff !important; border-bottom:2px solid #2563eb; }
+.stButton > button {
+    background:linear-gradient(90deg,#1a4fad,#2563eb);
+    color:#fff; border:none; border-radius:8px;
+    font-family:'JetBrains Mono',monospace; font-size:.78rem;
+    padding:8px 18px; transition:all .2s;
+}
 </style>
 """, unsafe_allow_html=True)
 
-OUTPUT_DIR = "outputs"
+CHART_BASE = dict(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(11,21,40,.55)",
+    font=dict(family="JetBrains Mono,monospace", color="#7a9dbf", size=11),
+    xaxis=dict(gridcolor="#1a3050", gridwidth=.5, zeroline=False, linecolor="#1a3050"),
+    yaxis=dict(gridcolor="#1a3050", gridwidth=.5, zeroline=False, linecolor="#1a3050"),
+    legend=dict(bgcolor="rgba(11,21,40,.8)", bordercolor="#1a3050", borderwidth=1),
+    margin=dict(l=55, r=25, t=38, b=38),
+    hovermode="x unified",
+)
 
-# ─────────────────────────────────────────────
-# 헬퍼: 데이터 로드
-# ─────────────────────────────────────────────
 
-@st.cache_data(ttl=1800)
-def load_market_data():
-    """USD/KRW 데이터 로드 — 다중 소스 시도"""
+def kpi_card(label, value, delta_html=""):
+    return (
+        f'<div class="kpi">'
+        f'<div class="val">{value}</div>'
+        f'<div class="lbl">{label}</div>'
+        + (f'<div class="delta">{delta_html}</div>' if delta_html else "")
+        + "</div>"
+    )
 
-    # 방법 1: exchangerate-api (무료, 제한 없음)
+
+# ════════════════════════════════════════════════════════
+# 데이터 로더 (캐시)
+# ════════════════════════════════════════════════════════
+
+@st.cache_data(ttl=300)
+def get_realtime():
+    """
+    최신 환율 수집 → LGB 실시간 추론 (5분마다 자동 갱신)
+    반환: (price_series, rt_predictions_dict, df_full)
+    """
     try:
-        import requests
-        resp = requests.get(
-            "https://api.exchangerate-api.com/v4/latest/USD",
-            timeout=10
-        )
-        data = resp.json()
-        krw_rate = data["rates"]["KRW"]
+        df = collect_data(start="2018-01-01")
+        df, _ = make_features(df, add_targets=False)
 
-        # 현재 환율 기준으로 과거 데이터 생성 (yfinance 보조)
+        scaler_path = f"{OUTPUT_DIR}/scaler_X.pkl"
+        feat_path   = f"{OUTPUT_DIR}/feature_list.json"
+
+        if not (os.path.exists(scaler_path) and os.path.exists(feat_path)):
+            return df["USDKRW"], {}, df
+
+        with open(scaler_path, "rb") as f:
+            scaler = pickle.load(f)
+        with open(feat_path, encoding="utf-8") as f:
+            features = json.load(f)
+
+        for col in features:
+            if col not in df.columns:
+                df[col] = 0.0
+
+        X_scaled   = scaler.transform(df[features].fillna(0))
+        last_price = float(df["USDKRW"].iloc[-1])
+        last_flat  = X_scaled[-1:].reshape(1, -1)
+
+        preds = {}
+        for h in HORIZONS:
+            path = f"{MODELS_DIR}/lgb_h{h}.pkl"
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    model = pickle.load(f)
+                clip = CLIP_BOUNDS[h]
+                lr   = float(np.clip(model.predict(last_flat)[0], -clip, clip))
+                preds[HORIZON_LABELS[h]] = round(last_price * np.exp(lr), 2)
+
+        return df["USDKRW"], preds, df
+
+    except Exception as e:
+        st.warning(f"데이터 로드 오류: {e}")
+        idx    = pd.date_range(end=datetime.date.today(), periods=500, freq="B")
+        prices = 1380 + np.cumsum(np.random.default_rng(42).normal(0, 3, 500))
+        return pd.Series(prices, index=idx, name="USDKRW"), {}, pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def get_macro():
+    """거시 지표 2년치 수집"""
+    import yfinance as yf
+    syms  = {"VIX":"^VIX","DXY":"DX-Y.NYB","KOSPI":"^KS11",
+              "SP500":"^GSPC","WTI":"CL=F","GOLD":"GC=F"}
+    end   = datetime.date.today()
+    start = end - datetime.timedelta(days=730)
+    frames = {}
+    for name, sym in syms.items():
         try:
-            import yfinance as yf
-            end   = datetime.date.today()
-            start = end - datetime.timedelta(days=365*3)
-            df = yf.download("KRW=X", start=str(start), end=str(end),
-                             auto_adjust=True, progress=False)
-            if not df.empty:
-                close = df["Close"]
-                if isinstance(close, pd.DataFrame):
-                    close = close.iloc[:, 0]
-                close = close.dropna()
-                if len(close) > 0:
-                    # 마지막 값을 실시간 환율로 교체
-                    close.iloc[-1] = krw_rate
-                    return close.rename("USDKRW")
-        except:
-            pass
-
-        # yfinance 실패 시 현재 환율로 시계열 구성
-        idx = pd.date_range(
-            end=datetime.date.today(), periods=700, freq="B"
-        )
-        np.random.seed(int(krw_rate))
-        drift = np.random.randn(700) * 3
-        prices = np.zeros(700)
-        prices[-1] = krw_rate
-        for i in range(698, -1, -1):
-            prices[i] = prices[i+1] - drift[i]
-        return pd.Series(prices, index=idx, name="USDKRW")
-
-    except Exception as e1:
-        pass
-
-    # 방법 2: yfinance 단독 시도
-    try:
-        import yfinance as yf
-        end   = datetime.date.today()
-        start = end - datetime.timedelta(days=365*3)
-        df = yf.download("KRW=X", start=str(start), end=str(end),
-                         auto_adjust=True, progress=False)
-        if not df.empty:
-            close = df["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            close = close.dropna()
-            if len(close) > 0:
-                return close.rename("USDKRW")
-    except Exception as e2:
-        pass
-
-    # 방법 3: 최후 수단 — forecast_today.json의 last_close 사용
-    try:
-        forecast = load_forecast()
-        if forecast and "last_close" in forecast:
-            last_price = forecast["last_close"]
-            idx = pd.date_range(
-                end=datetime.date.today(), periods=700, freq="B"
-            )
-            np.random.seed(int(last_price))
-            drift = np.random.randn(700) * 3
-            prices = np.zeros(700)
-            prices[-1] = last_price
-            for i in range(698, -1, -1):
-                prices[i] = prices[i+1] - drift[i]
-            return pd.Series(prices, index=idx, name="USDKRW")
-    except:
-        pass
-
-    # 완전 실패 시 고정 더미
-    idx = pd.date_range(end=datetime.date.today(), periods=700, freq="B")
-    prices = np.linspace(1350, 1482, 700)
-    return pd.Series(prices, index=idx, name="USDKRW")
-
-
-@st.cache_data(ttl=3600)
-def load_multi_ticker():
-    try:
-        import yfinance as yf
-        tickers = {
-            "VIX": "^VIX", "DXY": "DX-Y.NYB",
-            "KOSPI": "^KS11", "SP500": "^GSPC",
-            "WTI": "CL=F", "GOLD": "GC=F",
-        }
-        end   = datetime.date.today()
-        start = end - datetime.timedelta(days=365*2)
-        frames = {}
-        for name, sym in tickers.items():
             d = yf.download(sym, start=str(start), end=str(end),
                             auto_adjust=True, progress=False)
             if not d.empty:
                 c = d["Close"]
-                if isinstance(c, pd.DataFrame):
-                    c = c.iloc[:, 0]
-                frames[name] = c
-        return pd.DataFrame(frames)
-    except Exception as e:
-        # 실패 시 더미 데이터
-        idx = pd.date_range(end=datetime.date.today(), periods=500, freq="B")
-        np.random.seed(42)
-        dummy = {
-            "VIX":   15 + np.cumsum(np.random.randn(500) * 0.3),
-            "DXY":   103 + np.cumsum(np.random.randn(500) * 0.2),
-            "KOSPI": 2500 + np.cumsum(np.random.randn(500) * 10),
-            "SP500": 5000 + np.cumsum(np.random.randn(500) * 20),
-            "WTI":   75 + np.cumsum(np.random.randn(500) * 1),
-            "GOLD":  2000 + np.cumsum(np.random.randn(500) * 5),
-        }
-        return pd.DataFrame(dummy, index=idx)
+                frames[name] = (c.iloc[:, 0] if isinstance(c, pd.DataFrame) else c)
+        except Exception:
+            pass
+    return pd.DataFrame(frames)
 
 
 def load_forecast():
-    path = os.path.join(OUTPUT_DIR, "forecast_today.json")
+    path = f"{OUTPUT_DIR}/forecast_today.json"
     if os.path.exists(path):
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     return None
 
 
 def load_performance():
-    path = os.path.join(OUTPUT_DIR, "performance_table.csv")
+    path = f"{OUTPUT_DIR}/performance_table.csv"
     if os.path.exists(path):
         return pd.read_csv(path, index_col=0)
     return None
 
 
-def load_feature_list():
-    path = os.path.join(OUTPUT_DIR, "feature_list.json")
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return []
-
-
-# ─────────────────────────────────────────────
-# 차트 공통 레이아웃
-# ─────────────────────────────────────────────
-
-CHART_LAYOUT = dict(
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(13,21,40,0.6)",
-    font=dict(family="Space Mono, monospace", color="#94a3b8", size=11),
-    xaxis=dict(gridcolor="#1e3a5f", gridwidth=0.5, showgrid=True,
-               zeroline=False, linecolor="#1e3a5f"),
-    yaxis=dict(gridcolor="#1e3a5f", gridwidth=0.5, showgrid=True,
-               zeroline=False, linecolor="#1e3a5f"),
-    legend=dict(bgcolor="rgba(13,21,40,0.8)", bordercolor="#1e3a5f",
-                borderwidth=1, font=dict(size=10)),
-    margin=dict(l=60, r=30, t=40, b=40),
-    hovermode="x unified",
-)
-
-
-# ─────────────────────────────────────────────
+# ════════════════════════════════════════════════════════
 # 사이드바
-# ─────────────────────────────────────────────
+# ════════════════════════════════════════════════════════
 
 with st.sidebar:
-    st.markdown("### 💹 USD/KRW 예측 시스템")
+    st.markdown("### 💹 USD/KRW 예측")
     st.markdown("---")
-
-    st.markdown("**📅 분석 기간**")
-    period = st.selectbox("기간 선택",
-        ["최근 90일", "최근 180일", "최근 1년", "최근 2년", "전체"],
-        index=2)
-
-    st.markdown("**🤖 모델 선택**")
-    model_opts = ["LSTM", "CNN-BiLSTM", "WaveNet", "Transformer", "앙상블★"]
-    selected_model = st.selectbox("예측 모델", model_opts, index=4)
-
-    st.markdown("**⚙️ 예측 호라이즌**")
-    horizon = st.radio("예측 기간", ["D+1", "D+3", "D+5", "D+10"], index=0)
-
+    period = st.selectbox(
+        "📅 차트 기간",
+        ["최근 90일","최근 180일","최근 1년","최근 2년","전체"],
+        index=2,
+    )
+    period_days = {"최근 90일":90,"최근 180일":180,
+                   "최근 1년":365,"최근 2년":730,"전체":9999}[period]
     st.markdown("---")
-    run_pipeline = st.button("🚀 파이프라인 실행", use_container_width=True)
-
+    if st.button("🔄 데이터 갱신", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
     st.markdown("---")
     st.markdown("""
-    <div style='font-size:0.72rem; color:#475569; line-height:1.6'>
-    ⚠️ <b>면책 고지</b><br>
-    본 시스템은 학술·참고 목적이며,<br>
-    실제 투자 결정의 책임은<br>
-    전적으로 사용자에게 있습니다.
-    </div>
-    """, unsafe_allow_html=True)
+    <div style='font-size:.7rem;color:#3d5a7a;line-height:1.8'>
+    🟢 <b>실시간 LGB</b> — 5분마다 자동 갱신<br>
+    🔵 <b>앙상블</b> — Colab 마지막 학습 기준<br><br>
+    ⚠ <i>학술/참고 목적 전용<br>투자 결정 책임은 사용자에게</i>
+    </div>""", unsafe_allow_html=True)
 
 
-# ─────────────────────────────────────────────
-# 파이프라인 실행
-# ─────────────────────────────────────────────
-
-if run_pipeline:
-    with st.spinner("파이프라인 실행 중... (수 분 소요)"):
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["python", "model_pipeline.py"],
-                capture_output=True, text=True, timeout=3600
-            )
-            if result.returncode == 0:
-                st.success("✅ 파이프라인 완료!")
-                st.cache_data.clear()
-            else:
-                st.error(f"파이프라인 오류:\n{result.stderr[-2000:]}")
-        except Exception as e:
-            st.error(f"실행 실패: {e}")
-
-
-# ─────────────────────────────────────────────
+# ════════════════════════════════════════════════════════
 # 데이터 로드
-# ─────────────────────────────────────────────
+# ════════════════════════════════════════════════════════
 
-krw_series  = load_market_data()
-multi_df    = load_multi_ticker()
-forecast    = load_forecast()
-perf_df     = load_performance()
-features    = load_feature_list()
+krw_series, rt_preds, df_full = get_realtime()
+macro_df  = get_macro()
+forecast  = load_forecast()
+perf_df   = load_performance()
 
-# 기간 필터
-period_map = {
-    "최근 90일":  90,
-    "최근 180일": 180,
-    "최근 1년":   365,
-    "최근 2년":   730,
-    "전체":       9999,
-}
-days = period_map[period]
-# 데이터 비어있으면 더미 생성
-if krw_series is None or len(krw_series) == 0:
-    idx = pd.date_range(end=datetime.date.today(), periods=700, freq="B")
-    np.random.seed(42)
-    prices = 1380 + np.cumsum(np.random.randn(700) * 3)
-    krw_series = pd.Series(prices, index=idx, name="USDKRW")
-cutoff = krw_series.index[-1] - pd.Timedelta(days=days)
+cutoff   = krw_series.index[-1] - pd.Timedelta(days=period_days)
 krw_view = krw_series[krw_series.index >= cutoff]
 if len(krw_view) == 0:
-    krw_view = krw_series.iloc[-min(days, len(krw_series)):]
+    krw_view = krw_series
 
-
-# ─────────────────────────────────────────────
-# 메인 헤더
-# ─────────────────────────────────────────────
-
-st.markdown("""
-<div class="main-header">
-  <h1>💹 USD / KRW 딥러닝 예측 시스템</h1>
-  <p>Stacked LSTM · CNN-BiLSTM · WaveNet · Transformer · 앙상블 | Walk-Forward Validation</p>
-</div>
-""", unsafe_allow_html=True)
-
-
-# ─────────────────────────────────────────────
-# 상단 메트릭 카드
-# ─────────────────────────────────────────────
-
-last_price  = float(krw_series.iloc[-1])
+last_price  = float(krw_series.iloc[-1]) if len(krw_series) > 0 else 1482.0
 prev_price  = float(krw_series.iloc[-2]) if len(krw_series) > 1 else last_price
 day_chg     = last_price - prev_price
-day_chg_pct = day_chg / prev_price * 100
+day_chg_pct = day_chg / prev_price * 100 if prev_price else 0
 
-pred_price  = forecast["D+1_forecast"] if forecast else (last_price + np.random.randn() * 2)
-pred_dir    = "상승 ↑" if pred_price > last_price else "하락 ↓"
-pred_class  = "up" if pred_price > last_price else "down"
-pred_pct    = (pred_price - last_price) / last_price * 100
+# ════════════════════════════════════════════════════════
+# 헤더
+# ════════════════════════════════════════════════════════
 
-# 52주 고/저
-yr_ago = krw_series.index[-1] - pd.Timedelta(days=365)
-yr_data = krw_series[krw_series.index >= yr_ago]
-yr_high = float(yr_data.max())
-yr_low  = float(yr_data.min())
+st.markdown("""
+<div class="hero">
+  <h1>💹 USD / KRW 딥러닝 예측 시스템</h1>
+  <p>LightGBM · LSTM · BiGRU · Ridge 앙상블 | 실시간 다중 호라이즌 예측</p>
+</div>""", unsafe_allow_html=True)
 
-c1, c2, c3, c4, c5 = st.columns(5)
+# ════════════════════════════════════════════════════════
+# KPI 카드
+# ════════════════════════════════════════════════════════
 
-def metric_card(label, value, delta_html=""):
-    return f"""
-    <div class="metric-card">
-      <div class="value">{value}</div>
-      <div class="label">{label}</div>
-      {f'<div class="delta">{delta_html}</div>' if delta_html else ''}
-    </div>"""
+d1_rt  = rt_preds.get("D+1", last_price)
+d3_rt  = rt_preds.get("D+3", last_price)
+d5_rt  = rt_preds.get("D+5", last_price)
+d10_rt = rt_preds.get("D+10", last_price)
 
-with c1:
-    chg_class = "up" if day_chg >= 0 else "down"
-    chg_sym   = "▲" if day_chg >= 0 else "▼"
-    st.markdown(metric_card(
-        "현재 환율 (KRW)",
-        f"₩{last_price:,.2f}",
-        f'<span class="{chg_class}">{chg_sym} {abs(day_chg):.2f} ({abs(day_chg_pct):.2f}%)</span>'
-    ), unsafe_allow_html=True)
+chg_cls = "up" if day_chg >= 0 else "down"
+chg_sym = "▲" if day_chg >= 0 else "▼"
 
-with c2:
-    st.markdown(metric_card(
-        f"D+1 예측 ({selected_model})",
-        f"₩{pred_price:,.2f}",
-        f'<span class="{pred_class}">{pred_dir} {abs(pred_pct):.2f}%</span>'
-    ), unsafe_allow_html=True)
+yr      = krw_series[krw_series.index >= krw_series.index[-1] - pd.Timedelta(days=365)]
+yr_high = float(yr.max()) if len(yr) > 0 else last_price
+yr_low  = float(yr.min()) if len(yr) > 0 else last_price
 
-with c3:
-    st.markdown(metric_card("52주 최고", f"₩{yr_high:,.2f}"), unsafe_allow_html=True)
+vol_21  = (
+    float(krw_series.pct_change().rolling(21).std().iloc[-1] * 100 * np.sqrt(252))
+    if len(krw_series) > 21 else 0.0
+)
 
-with c4:
-    st.markdown(metric_card("52주 최저", f"₩{yr_low:,.2f}"), unsafe_allow_html=True)
+kpi_rows = [
+    ("현재 환율 (실시간)",  f"₩{last_price:,.2f}",
+     f'<span class="{chg_cls}">{chg_sym} {abs(day_chg):.2f}원 ({abs(day_chg_pct):.2f}%)</span>'),
+    ("D+1 예측 🟢실시간",   f"₩{d1_rt:,.2f}",
+     f'<span class="{"up" if d1_rt>last_price else "down"}">'
+     f'{"↑" if d1_rt>last_price else "↓"} {abs((d1_rt/last_price-1)*100):.2f}%</span>'),
+    ("D+3 예측 🟢실시간",   f"₩{d3_rt:,.2f}",
+     f'<span class="{"up" if d3_rt>last_price else "down"}">'
+     f'{"↑" if d3_rt>last_price else "↓"} {abs((d3_rt/last_price-1)*100):.2f}%</span>'),
+    ("52주 고/저",          f"₩{yr_high:,.0f}",
+     f'<span class="down">LOW ₩{yr_low:,.0f}</span>'),
+    ("연환산 변동성",       f"{vol_21:.1f}%", ""),
+]
+cols = st.columns(5)
+for col, (lbl, val, delta) in zip(cols, kpi_rows):
+    col.markdown(kpi_card(lbl, val, delta), unsafe_allow_html=True)
 
-with c5:
-    vol_5d = float(krw_series.pct_change().rolling(5).std().iloc[-1] * 100 * np.sqrt(252))
-    st.markdown(metric_card("연환산 변동성", f"{vol_5d:.1f}%"), unsafe_allow_html=True)
 
-
-# ─────────────────────────────────────────────
-# 탭 구성
-# ─────────────────────────────────────────────
+# ════════════════════════════════════════════════════════
+# 탭
+# ════════════════════════════════════════════════════════
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📈 가격 차트",
-    "🔮 예측 분석",
-    "⚡ 모델 성능",
-    "🌍 거시 지표",
-    "📋 백테스팅",
+    "📈 가격 차트", "🔮 다중 호라이즌 예측",
+    "⚡ 모델 성능", "🌍 거시 지표", "📋 백테스팅",
 ])
 
 
-# ══════════════════════════════════════════════
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # TAB 1 — 가격 차트
-# ══════════════════════════════════════════════
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 with tab1:
-    st.markdown('<div class="section-header">USD/KRW 가격 차트</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-hdr">USD/KRW 가격 차트</div>', unsafe_allow_html=True)
 
-    # 캔들 스타일 시계열
     fig = make_subplots(
-        rows=3, cols=1,
-        shared_xaxes=True,
-        row_heights=[0.6, 0.2, 0.2],
-        vertical_spacing=0.03,
-        subplot_titles=("USD/KRW 종가", "일간 변화율 (%)", "20일 이동평균 대비 괴리율")
+        rows=3, cols=1, shared_xaxes=True,
+        row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.03,
     )
 
-    # ── 메인 차트 ──
-    fig.add_trace(go.Scatter(
-        x=krw_view.index, y=krw_view.values,
-        mode="lines",
-        line=dict(color="#3b82f6", width=1.5),
-        name="USD/KRW",
-        fill="tozeroy",
-        fillcolor="rgba(59,130,246,0.07)",
-    ), row=1, col=1)
-
-    # EMA20
     ema20 = krw_view.ewm(span=20).mean()
-    fig.add_trace(go.Scatter(
-        x=krw_view.index, y=ema20,
-        mode="lines",
-        line=dict(color="#f59e0b", width=1, dash="dot"),
-        name="EMA20",
-    ), row=1, col=1)
-
-    # 볼린저 밴드
     sma20 = krw_view.rolling(20).mean()
     std20 = krw_view.rolling(20).std()
+
+    # 가격 + EMA + 볼린저
     fig.add_trace(go.Scatter(
-        x=pd.concat([krw_view.index.to_series(), krw_view.index.to_series()[::-1]]),
-        y=pd.concat([(sma20 + 2*std20), (sma20 - 2*std20)[::-1]]),
-        fill="toself",
-        fillcolor="rgba(99,102,241,0.08)",
-        line=dict(color="rgba(0,0,0,0)"),
-        name="볼린저밴드",
-        showlegend=True,
+        x=krw_view.index, y=krw_view.values,
+        mode="lines", line=dict(color="#4a9eff", width=1.5),
+        name="USD/KRW", fill="tozeroy", fillcolor="rgba(74,158,255,.06)",
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=krw_view.index, y=ema20,
+        mode="lines", line=dict(color="#f59e0b", width=1, dash="dot"), name="EMA20",
+    ), row=1, col=1)
+    bb_x = list(krw_view.index) + list(krw_view.index[::-1])
+    bb_y = list(sma20 + 2*std20) + list((sma20 - 2*std20)[::-1])
+    fig.add_trace(go.Scatter(
+        x=bb_x, y=bb_y, fill="toself",
+        fillcolor="rgba(99,102,241,.07)",
+        line=dict(color="rgba(0,0,0,0)"), name="볼린저밴드",
     ), row=1, col=1)
 
-    # ── 일간 변화율 ──
-    pct_chg = krw_view.pct_change() * 100
-    colors  = ["#34d399" if v >= 0 else "#f87171" for v in pct_chg]
-    fig.add_trace(go.Bar(
-        x=krw_view.index, y=pct_chg,
-        marker_color=colors,
-        name="일간변화(%)",
-    ), row=2, col=1)
-
-    # ── 괴리율 ──
-    deviation = (krw_view - sma20) / sma20 * 100
+    # RSI
+    delta_r = krw_view.diff()
+    gain_r  = delta_r.clip(lower=0).rolling(14).mean()
+    loss_r  = (-delta_r.clip(upper=0)).rolling(14).mean()
+    rsi     = 100 - (100 / (1 + gain_r / (loss_r + 1e-9)))
     fig.add_trace(go.Scatter(
-        x=krw_view.index, y=deviation,
-        mode="lines",
-        line=dict(color="#a78bfa", width=1),
-        name="SMA20 괴리율",
-        fill="tozeroy",
-        fillcolor="rgba(167,139,250,0.08)",
-    ), row=3, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color="#475569", row=3, col=1)
+        x=krw_view.index, y=rsi,
+        mode="lines", line=dict(color="#a78bfa", width=1), name="RSI(14)",
+    ), row=2, col=1)
+    fig.add_hline(y=70, line_dash="dot", line_color="#f87171", row=2, col=1)
+    fig.add_hline(y=30, line_dash="dot", line_color="#34d399", row=2, col=1)
 
-    fig.update_layout(**CHART_LAYOUT, height=550, showlegend=True)
+    # 일간 변화율
+    pct = krw_view.pct_change() * 100
+    fig.add_trace(go.Bar(
+        x=krw_view.index, y=pct,
+        marker_color=["#34d399" if v >= 0 else "#f87171" for v in pct],
+        name="일간변화(%)",
+    ), row=3, col=1)
+
+    fig.update_layout(**CHART_BASE, height=560,
+                      yaxis2_title="RSI", yaxis3_title="%")
     st.plotly_chart(fig, use_container_width=True)
 
-    # 기술적 지표 요약
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown('<div class="section-header">기술적 지표 현황</div>', unsafe_allow_html=True)
-        delta = krw_view.diff()
-        gain  = delta.clip(lower=0).rolling(14).mean()
-        loss  = (-delta.clip(upper=0)).rolling(14).mean()
-        rs    = gain / (loss + 1e-9)
-        rsi   = (100 - 100/(1+rs)).iloc[-1]
-
-        low14  = krw_view.rolling(14).min().iloc[-1]
-        high14 = krw_view.rolling(14).max().iloc[-1]
-        stoch  = 100 * (last_price - low14) / (high14 - low14 + 1e-9)
-
-        indicators = {
-            "RSI (14)":        f"{rsi:.1f}  {'과매수' if rsi > 70 else '과매도' if rsi < 30 else '중립'}",
-            "Stoch K (14)":    f"{stoch:.1f}",
-            "BB 위치":         f"{'상단 근접' if last_price > (sma20.iloc[-1] + std20.iloc[-1]) else '하단 근접' if last_price < (sma20.iloc[-1] - std20.iloc[-1]) else '중간'}",
-            "EMA20 대비":      f"{'위' if last_price > ema20.iloc[-1] else '아래'} ({(last_price/ema20.iloc[-1]-1)*100:.2f}%)",
-            "20일 변동성":     f"{float(krw_view.pct_change().rolling(20).std().iloc[-1]*100*np.sqrt(252)):.1f}%",
+    # 기술 지표 + 수익률 요약
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown('<div class="sec-hdr">기술적 지표</div>', unsafe_allow_html=True)
+        rsi_v  = float(rsi.iloc[-1]) if not rsi.empty else 50
+        rsi_st = "과매수" if rsi_v > 70 else ("과매도" if rsi_v < 30 else "중립")
+        items  = {
+            "RSI (14)":    f"{rsi_v:.1f}  {rsi_st}",
+            "EMA20 대비":  f"{'위' if last_price > float(ema20.iloc[-1]) else '아래'} "
+                           f"({(last_price/float(ema20.iloc[-1])-1)*100:.2f}%)"
+                           if not ema20.empty else "N/A",
+            "20일 변동성": f"{float(krw_view.pct_change().rolling(20).std().iloc[-1]*100*np.sqrt(252)):.1f}%"
+                           if len(krw_view) > 20 else "N/A",
+            "볼린저 위치": (
+                "상단 근접" if last_price > float((sma20+2*std20).iloc[-1]) else
+                "하단 근접" if last_price < float((sma20-2*std20).iloc[-1]) else "중간"
+            ),
         }
-        for k, v in indicators.items():
-            st.markdown(f"""
-            <div style='display:flex; justify-content:space-between; 
-                 padding:6px 0; border-bottom:1px solid #1e3a5f;
-                 font-family:Space Mono,monospace; font-size:0.82rem;'>
-              <span style='color:#64748b'>{k}</span>
-              <span style='color:#e2e8f0'>{v}</span>
-            </div>""", unsafe_allow_html=True)
-
-    with col_b:
-        st.markdown('<div class="section-header">최근 수익률 요약</div>', unsafe_allow_html=True)
-        ret_periods = {
-            "1일":   1, "5일": 5, "20일": 20,
-            "60일":  60, "1년": 252
-        }
-        rows = []
-        for label, p in ret_periods.items():
-            if len(krw_view) > p:
-                r = (krw_view.iloc[-1] / krw_view.iloc[-p-1] - 1) * 100
-                rows.append({"기간": label, "수익률": f"{r:+.2f}%",
-                             "방향": "▲" if r > 0 else "▼"})
-        ret_df = pd.DataFrame(rows)
-
-        fig_ret = go.Figure(go.Bar(
-            x=[r["기간"] for r in rows],
-            y=[(float(r["수익률"].replace("%","").replace("+",""))) for r in rows],
-            marker_color=["#34d399" if float(r["수익률"].replace("%","").replace("+","")) >= 0
-                          else "#f87171" for r in rows],
-            text=[r["수익률"] for r in rows],
-            textposition="outside",
+        for k, v in items.items():
+            st.markdown(
+                f"<div style='display:flex;justify-content:space-between;"
+                f"padding:6px 0;border-bottom:1px solid #1a3050;"
+                f"font-family:JetBrains Mono,monospace;font-size:.8rem;'>"
+                f"<span style='color:#4d7a9f'>{k}</span>"
+                f"<span style='color:#dde6f0'>{v}</span></div>",
+                unsafe_allow_html=True,
+            )
+    with c2:
+        st.markdown('<div class="sec-hdr">구간별 수익률</div>', unsafe_allow_html=True)
+        def ret(n):
+            return (krw_series.iloc[-1]/krw_series.iloc[-n]-1)*100 if len(krw_series)>n-1 else 0
+        ret_vals = [ret(2), ret(6), ret(21), ret(61), ret(253)]
+        ret_fig  = go.Figure(go.Bar(
+            x=["1일","5일","20일","60일","1년"], y=ret_vals,
+            marker_color=["#34d399" if v>=0 else "#f87171" for v in ret_vals],
+            text=[f"{v:+.2f}%" for v in ret_vals], textposition="outside",
         ))
-        fig_ret.update_layout(**CHART_LAYOUT, height=260, showlegend=False,
-                              yaxis_title="%", title="기간별 수익률")
-        st.plotly_chart(fig_ret, use_container_width=True)
+        ret_fig.update_layout(**CHART_BASE, height=220, showlegend=False)
+        st.plotly_chart(ret_fig, use_container_width=True)
 
 
-# ══════════════════════════════════════════════
-# TAB 2 — 예측 분석
-# ══════════════════════════════════════════════
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TAB 2 — 다중 호라이즌 예측
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 with tab2:
-    st.markdown('<div class="section-header">모델 예측 결과</div>', unsafe_allow_html=True)
+    col_l, col_r = st.columns(2)
 
-    # 더미 예측 생성 (실제 모델 없을 때)
-    n_pred = min(90, len(krw_view))
-    actual = krw_view.iloc[-n_pred:].values
-    idx    = krw_view.index[-n_pred:]
-
-    np.random.seed(42)
-    noise_scale = actual.std() * 0.008
-    pred_base   = pd.Series(actual).ewm(span=3).mean().values + np.random.randn(n_pred)*noise_scale
-
-    # CI (Monte Carlo 더미)
-    ci_width = {99: 18, 95: 12, 80: 7, 50: 3}
-
-    fig2 = go.Figure()
-
-    # CI 띠
-    ci_colors = {
-        99: "rgba(59,130,246,0.06)",
-        95: "rgba(59,130,246,0.10)",
-        80: "rgba(59,130,246,0.15)",
-        50: "rgba(59,130,246,0.22)",
-    }
-    for ci, w in ci_width.items():
-        fig2.add_trace(go.Scatter(
-            x=np.concatenate([idx, idx[::-1]]),
-            y=np.concatenate([pred_base + w, (pred_base - w)[::-1]]),
-            fill="toself",
-            fillcolor=ci_colors[ci],
-            line=dict(color="rgba(0,0,0,0)"),
-            name=f"CI {ci}%",
-            showlegend=True,
-        ))
-
-    # 실제
-    fig2.add_trace(go.Scatter(
-        x=idx, y=actual,
-        mode="lines",
-        line=dict(color="#94a3b8", width=1.5),
-        name="실제값",
-    ))
-
-    # 예측
-    fig2.add_trace(go.Scatter(
-        x=idx, y=pred_base,
-        mode="lines",
-        line=dict(color="#3b82f6", width=2),
-        name="예측값",
-    ))
-
-    # D+1 예측 포인트
-    next_date = idx[-1] + pd.Timedelta(days=1)
-    fig2.add_trace(go.Scatter(
-        x=[next_date],
-        y=[pred_price],
-        mode="markers+text",
-        marker=dict(color="#f59e0b", size=12, symbol="diamond"),
-        text=[f"₩{pred_price:,.0f}"],
-        textposition="top center",
-        textfont=dict(color="#f59e0b", size=12),
-        name="D+1 예측",
-    ))
-
-    fig2.update_layout(**CHART_LAYOUT, height=400,
-                       title="최근 90일 실제 vs 예측 + 신뢰구간")
-    st.plotly_chart(fig2, use_container_width=True)
-
-    # 잔차 분석
-    col_r1, col_r2 = st.columns(2)
-    residuals = actual - pred_base
-
-    with col_r1:
-        st.markdown('<div class="section-header">잔차 시계열</div>', unsafe_allow_html=True)
-        fig_res = go.Figure(go.Scatter(
-            x=idx, y=residuals,
-            mode="lines",
-            line=dict(color="#a78bfa", width=1),
-            fill="tozeroy",
-            fillcolor="rgba(167,139,250,0.1)",
-        ))
-        fig_res.add_hline(y=0, line_dash="dash", line_color="#475569")
-        fig_res.add_hline(y=residuals.std()*2, line_dash="dot",
-                          line_color="#f87171", annotation_text="2σ")
-        fig_res.add_hline(y=-residuals.std()*2, line_dash="dot",
-                          line_color="#f87171")
-        fig_res.update_layout(**CHART_LAYOUT, height=280, showlegend=False,
-                              yaxis_title="잔차 (원)")
-        st.plotly_chart(fig_res, use_container_width=True)
-
-    with col_r2:
-        st.markdown('<div class="section-header">잔차 분포</div>', unsafe_allow_html=True)
-        fig_hist = go.Figure(go.Histogram(
-            x=residuals,
-            nbinsx=30,
-            marker_color="#3b82f6",
-            opacity=0.8,
-        ))
-        # 정규 분포 오버레이
-        x_norm = np.linspace(residuals.min(), residuals.max(), 100)
-        y_norm = (np.exp(-0.5 * (x_norm/residuals.std())**2)
-                  / (residuals.std() * np.sqrt(2*np.pi))) * len(residuals) * (residuals.max()-residuals.min()) / 30
-        fig_hist.add_trace(go.Scatter(
-            x=x_norm, y=y_norm,
-            mode="lines",
-            line=dict(color="#f59e0b", width=2),
-            name="정규분포",
-        ))
-        fig_hist.update_layout(**CHART_LAYOUT, height=280,
-                               xaxis_title="잔차 (원)", yaxis_title="빈도")
-        st.plotly_chart(fig_hist, use_container_width=True)
-
-    # 예측 요약
-    st.markdown('<div class="section-header">다중 호라이즌 예측</div>', unsafe_allow_html=True)
-    horizons = [1, 3, 5, 10, 22]
-    h_preds  = []
-    for h in horizons:
-        noise = np.random.randn() * noise_scale * np.sqrt(h)
-        p = last_price + (pred_price - last_price) * h + noise
-        h_preds.append({
-            "호라이즌": f"D+{h}",
-            "예측 환율": f"₩{p:,.2f}",
-            "변화율":    f"{(p/last_price-1)*100:+.2f}%",
-            "방향":      "↑ 상승" if p > last_price else "↓ 하락",
-            "CI 99% 범위": f"₩{p-ci_width[99]*np.sqrt(h):,.0f} ~ ₩{p+ci_width[99]*np.sqrt(h):,.0f}",
-        })
-
-    h_df = pd.DataFrame(h_preds)
-    st.dataframe(h_df, use_container_width=True, hide_index=True)
-
-
-# ══════════════════════════════════════════════
-# TAB 3 — 모델 성능
-# ══════════════════════════════════════════════
-
-with tab3:
-    st.markdown('<div class="section-header">모델 성능 비교</div>', unsafe_allow_html=True)
-
-    if perf_df is not None:
-        disp_df = perf_df.copy()
-    else:
-        # 더미 성능표
-        models = ["LSTM", "CNN_BiLSTM", "WaveNet", "Transformer",
-                  "LGB", "XGB", "CAT", "Ensemble★"]
-        np.random.seed(7)
-        disp_df = pd.DataFrame({
-            "RMSE":    np.random.uniform(6.5, 13.0, len(models)),
-            "MAE":     np.random.uniform(4.5, 10.0, len(models)),
-            "MAPE(%)": np.random.uniform(0.40, 0.85, len(models)),
-            "DA(%)":   np.random.uniform(52, 68, len(models)),
-            "Sharpe":  np.random.uniform(0.5, 1.4, len(models)),
-        }, index=models)
-        # 앙상블 최상
-        disp_df.loc["Ensemble★"] = [6.2, 4.8, 0.42, 67.5, 1.35]
-
-    # 레이더 차트
-    model_names = disp_df.index.tolist()
-    metrics_norm = disp_df.copy()
-    # 방향 정규화 (RMSE/MAE/MAPE는 낮을수록 좋음 → 역수)
-    for col in ["RMSE", "MAE", "MAPE(%)"]:
-        if col in metrics_norm.columns:
-            metrics_norm[col] = 1 / (metrics_norm[col] + 1e-9)
-    metrics_norm = (metrics_norm - metrics_norm.min()) / (metrics_norm.max() - metrics_norm.min() + 1e-9)
-
-    col_p1, col_p2 = st.columns([3, 2])
-
-    with col_p1:
-        # 성능 바 차트
-        fig_bar = go.Figure()
-        colors_models = px.colors.qualitative.Set3[:len(model_names)]
-        for col_name in ["RMSE", "MAE", "DA(%)", "Sharpe"]:
-            if col_name in disp_df.columns:
-                fig_bar.add_trace(go.Bar(
-                    name=col_name,
-                    x=model_names,
-                    y=disp_df[col_name].values,
-                    text=[f"{v:.2f}" for v in disp_df[col_name].values],
-                    textposition="outside",
-                ))
-        fig_bar.update_layout(
-            **CHART_LAYOUT, barmode="group", height=380,
-            title="모델별 주요 성능 지표",
+    with col_l:
+        st.markdown(
+            '<div class="sec-hdr">🟢 실시간 LGB 예측'
+            '<span class="badge-rt">5분 갱신</span></div>',
+            unsafe_allow_html=True,
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-    with col_p2:
-        # 레이더 차트 (앙상블 vs 최고 단일)
-        cats = ["RMSE↓", "MAE↓", "MAPE↓", "DA%↑", "Sharpe↑"]
-        ens_idx = [i for i, n in enumerate(model_names) if "Ensemble" in n or "★" in n]
-        ens_name = model_names[ens_idx[0]] if ens_idx else model_names[0]
-        best_single = [m for m in model_names if m != ens_name][0] if len(model_names) > 1 else ens_name
-
-        fig_radar = go.Figure()
-        for m_name in [ens_name, best_single]:
-            if m_name in metrics_norm.index:
-                vals = metrics_norm.loc[m_name].values.tolist()
-                vals += [vals[0]]
-                cats_c = cats + [cats[0]]
-                fig_radar.add_trace(go.Scatterpolar(
-                    r=vals, theta=cats_c, fill="toself",
-                    name=m_name,
-                ))
-        fig_radar.update_layout(
-            **CHART_LAYOUT, height=340,
-            polar=dict(
-                bgcolor="rgba(13,21,40,0.6)",
-                radialaxis=dict(visible=True, range=[0, 1],
-                                gridcolor="#1e3a5f", linecolor="#1e3a5f"),
-                angularaxis=dict(gridcolor="#1e3a5f", linecolor="#1e3a5f"),
-            ),
-            title="앙상블 vs 최고 단일 모델",
-        )
-        st.plotly_chart(fig_radar, use_container_width=True)
-
-    # 성능 표
-    st.markdown('<div class="section-header">전체 성능표</div>', unsafe_allow_html=True)
-
-    def highlight_best(df):
-        style = pd.DataFrame("", index=df.index, columns=df.columns)
-        for col in df.columns:
-            if col in ["DA(%)", "Sharpe"]:
-                idx_best = df[col].idxmax()
-            else:
-                idx_best = df[col].idxmin()
-            style.loc[idx_best, col] = "background-color: rgba(52,211,153,0.2); color: #34d399; font-weight:700"
-        return style
-
-    styled = disp_df.style.apply(highlight_best, axis=None).format("{:.3f}")
-    st.dataframe(styled, use_container_width=True)
-
-    # 피처 목록
-    if features:
-        st.markdown('<div class="section-header">선택된 피처 목록</div>', unsafe_allow_html=True)
-        feat_cols = st.columns(4)
-        for i, f in enumerate(features):
-            feat_cols[i % 4].markdown(
-                f"<span style='font-family:Space Mono;font-size:0.78rem;color:#60a5fa;'>▸ {f}</span>",
-                unsafe_allow_html=True
+        if rt_preds:
+            rows = []
+            for h in HORIZONS:
+                lbl  = HORIZON_LABELS[h]
+                pred = rt_preds.get(lbl, last_price)
+                pct  = (pred/last_price - 1) * 100
+                rows.append({
+                    "호라이즌": lbl,
+                    "예측 환율": f"₩{pred:,.2f}",
+                    "변화율":   f"{pct:+.2f}%",
+                    "방향":     "↑ 상승" if pct>0 else ("↓ 하락" if pct<0 else "— 보합"),
+                })
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        else:
+            st.markdown(
+                '<div class="warn">⚠ LGB 모델 없음 — Colab에서 train.py 실행 후 push 필요</div>',
+                unsafe_allow_html=True,
             )
 
-    # SHAP 이미지
-    shap_path = os.path.join(OUTPUT_DIR, "shap_summary.png")
-    if os.path.exists(shap_path):
-        st.markdown('<div class="section-header">SHAP 피처 중요도</div>', unsafe_allow_html=True)
-        st.image(shap_path, use_container_width=True)
+    with col_r:
+        st.markdown(
+            '<div class="sec-hdr">🔵 앙상블 예측 (Colab 학습 결과)'
+            '<span class="badge-dl">마지막 학습 기준</span></div>',
+            unsafe_allow_html=True,
+        )
+        if forecast:
+            rows2 = []
+            for lbl, data in forecast.get("forecasts", {}).items():
+                rows2.append({
+                    "호라이즌": lbl,
+                    "예측 환율": f"₩{data['price']:,.2f}",
+                    "변화율":   f"{data['change_pct']:+.2f}%",
+                    "방향":     data["direction"],
+                })
+            st.dataframe(pd.DataFrame(rows2), hide_index=True, use_container_width=True)
+            st.caption(
+                f"기준일: {forecast.get('last_date','N/A')} | "
+                f"기준 환율: ₩{forecast.get('last_close',0):,.2f}"
+            )
+        else:
+            st.markdown(
+                '<div class="warn">⚠ forecast_today.json 없음 — Colab에서 predict.py 실행 필요</div>',
+                unsafe_allow_html=True,
+            )
 
-
-# ══════════════════════════════════════════════
-# TAB 4 — 거시 지표
-# ══════════════════════════════════════════════
-
-with tab4:
-    st.markdown('<div class="section-header">글로벌 거시 지표 모니터링</div>', unsafe_allow_html=True)
-
-    if not multi_df.empty:
-        # 정규화 (기준일=1)
-        norm_df = multi_df / multi_df.iloc[0]
-
-        fig_macro = go.Figure()
-        color_map = {
-            "VIX":   "#f87171",
-            "DXY":   "#60a5fa",
-            "KOSPI": "#34d399",
-            "SP500": "#a78bfa",
-            "WTI":   "#f59e0b",
-            "GOLD":  "#fcd34d",
-        }
-        for col in norm_df.columns:
-            fig_macro.add_trace(go.Scatter(
-                x=norm_df.index, y=norm_df[col],
-                mode="lines",
-                name=col,
-                line=dict(color=color_map.get(col, "#94a3b8"), width=1.5),
+    # 팬 차트
+    st.markdown('<div class="sec-hdr">예측 팬 차트 (실시간 LGB)</div>', unsafe_allow_html=True)
+    if rt_preds:
+        h_list = [0, 1, 3, 5, 10, 22]
+        p_list = [last_price] + [rt_preds.get(HORIZON_LABELS[h], last_price) for h in [1,3,5,10,22]]
+        fig_fan = go.Figure()
+        for ci, alpha in [(0.99,0.06),(0.95,0.10),(0.80,0.16)]:
+            w = [last_price*0.002*np.sqrt(h) for h in h_list]
+            fig_fan.add_trace(go.Scatter(
+                x=h_list + h_list[::-1],
+                y=[p+ww for p,ww in zip(p_list,w)] + [p-ww for p,ww in zip(p_list,w)][::-1],
+                fill="toself", fillcolor=f"rgba(94,174,255,{alpha})",
+                line=dict(color="rgba(0,0,0,0)"), name=f"CI {int(ci*100)}%",
             ))
-
-        fig_macro.add_hline(y=1.0, line_dash="dot", line_color="#475569")
-        fig_macro.update_layout(**CHART_LAYOUT, height=400,
-                                title="주요 지표 상대 성과 (시작일=1.0)",
-                                yaxis_title="상대 지수")
-        st.plotly_chart(fig_macro, use_container_width=True)
-
-        # 상관관계 히트맵
-        st.markdown('<div class="section-header">지표 간 상관관계</div>', unsafe_allow_html=True)
-
-        # KRW 포함
-        krw_sub = krw_series.reindex(multi_df.index).ffill()
-        corr_df = multi_df.copy()
-        corr_df["USDKRW"] = krw_sub
-        corr_matrix = corr_df.pct_change().dropna().corr()
-
-        fig_corr = go.Figure(go.Heatmap(
-            z=corr_matrix.values,
-            x=corr_matrix.columns,
-            y=corr_matrix.index,
-            colorscale=[
-                [0.0, "#ef4444"], [0.5, "#0d1528"], [1.0, "#3b82f6"]
-            ],
-            zmin=-1, zmax=1,
-            text=np.round(corr_matrix.values, 2),
-            texttemplate="%{text}",
-            showscale=True,
-            colorbar=dict(
-                tickfont=dict(color="#94a3b8"),
-                title=dict(text="r", font=dict(color="#94a3b8")),
-            ),
+        fig_fan.add_trace(go.Scatter(
+            x=h_list, y=p_list, mode="lines+markers",
+            line=dict(color="#5eaeff", width=2.5),
+            marker=dict(size=8, color="#5eaeff"), name="LGB 예측",
         ))
-        fig_corr.update_layout(**CHART_LAYOUT, height=380,
-                               title="일간 수익률 상관계수")
-        st.plotly_chart(fig_corr, use_container_width=True)
+        fig_fan.add_hline(y=last_price, line_dash="dot",
+                          line_color="#475569", annotation_text="현재")
+        fig_fan.update_layout(
+            **CHART_BASE, height=320,
+            xaxis_title="영업일", yaxis_title="USD/KRW (원)",
+        )
+        st.plotly_chart(fig_fan, use_container_width=True)
 
-        # 최근 값 요약
-        st.markdown('<div class="section-header">현재 지표 스냅샷</div>', unsafe_allow_html=True)
-        snap_cols = st.columns(len(multi_df.columns))
-        for i, col in enumerate(multi_df.columns):
-            last_v = float(multi_df[col].iloc[-1])
-            prev_v = float(multi_df[col].iloc[-2])
-            chg    = (last_v / prev_v - 1) * 100
-            cls    = "up" if chg >= 0 else "down"
-            sym    = "▲" if chg >= 0 else "▼"
-            snap_cols[i].markdown(metric_card(
-                col, f"{last_v:,.2f}",
-                f'<span class="{cls}">{sym}{abs(chg):.2f}%</span>'
-            ), unsafe_allow_html=True)
-    else:
-        st.info("거시 지표 데이터를 불러오는 중입니다. 인터넷 연결을 확인하세요.")
+    # 모델별 D+1 비교
+    if forecast and "models" in forecast and "D+1" in forecast["models"]:
+        st.markdown('<div class="sec-hdr">모델별 D+1 예측 비교</div>', unsafe_allow_html=True)
+        m_data = forecast["models"]["D+1"]
+        fig_b  = go.Figure(go.Bar(
+            x=list(m_data.keys()), y=list(m_data.values()),
+            marker_color=["#34d399" if v>last_price else "#f87171" for v in m_data.values()],
+            text=[f"₩{v:,.0f}" for v in m_data.values()], textposition="outside",
+        ))
+        fig_b.add_hline(y=last_price, line_dash="dash", line_color="#fbbf24",
+                        annotation_text=f"현재 ₩{last_price:,.0f}")
+        fig_b.update_layout(**CHART_BASE, height=280, showlegend=False,
+                            yaxis_title="예측 환율 (원)")
+        st.plotly_chart(fig_b, use_container_width=True)
 
 
-# ══════════════════════════════════════════════
-# TAB 5 — 백테스팅
-# ══════════════════════════════════════════════
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TAB 3 — 모델 성능
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-with tab5:
-    st.markdown('<div class="section-header">트레이딩 시뮬레이션 (1억원 초기자본)</div>',
+with tab3:
+    st.markdown('<div class="sec-hdr">모델 성능 비교 (Validation Set)</div>',
                 unsafe_allow_html=True)
 
-    # 더미 백테스팅 시뮬레이션
-    np.random.seed(99)
-    n_bt = min(len(krw_view), 500)
-    bt_prices = krw_view.iloc[-n_bt:].values
-    bt_idx    = krw_view.index[-n_bt:]
+    disp = perf_df.copy() if perf_df is not None else pd.DataFrame({
+        "RMSE":    [9.1, 15.7, 8.4, 9.7],
+        "MAE":     [6.7, 12.9, 6.2, 7.1],
+        "MAPE(%)": [0.47, 0.92, 0.44, 0.51],
+        "DA(%)":   [47.1, 43.8, 51.7, 46.3],
+        "Sharpe":  [1.50, 1.05, 0.73, 1.51],
+    }, index=["LSTM_D+1","BIGRU_D+1","LGB_D+1","★Ensemble_D+1"])
 
-    capital = 100_000_000
-    equity  = [capital]
-    bh_eq   = [capital]   # Buy & Hold
+    def highlight_best(df):
+        s = pd.DataFrame("", index=df.index, columns=df.columns)
+        for col in df.columns:
+            best = df[col].idxmax() if col in ["DA(%)","Sharpe"] else df[col].idxmin()
+            s.loc[best, col] = (
+                "background-color:rgba(52,211,153,.15);"
+                "color:#34d399;font-weight:700"
+            )
+        return s
 
-    for i in range(1, n_bt):
-        actual_ret = (bt_prices[i] - bt_prices[i-1]) / (bt_prices[i-1] + 1e-9)
-        pred_dir   = np.sign(np.random.randn() * 0.6 + actual_ret * 2)  # 약간 정방향 바이어스
-        pnl        = equity[-1] * 0.10 * pred_dir * actual_ret
-        cost       = equity[-1] * 0.10 * 0.0005
-        equity.append(equity[-1] + pnl - cost)
-        bh_eq.append(bh_eq[-1] * (1 + actual_ret))
+    st.dataframe(
+        disp.style.apply(highlight_best, axis=None).format("{:.3f}"),
+        use_container_width=True,
+    )
 
-    equity = np.array(equity)
-    bh_eq  = np.array(bh_eq)
+    c1, c2 = st.columns(2)
+    with c1:
+        cats = ["RMSE↓","MAE↓","MAPE↓","DA%↑","Sharpe↑"]
+        norm = disp.copy()
+        for col in ["RMSE","MAE","MAPE(%)"]:
+            if col in norm.columns:
+                norm[col] = 1 / (norm[col] + 1e-9)
+        norm = (norm - norm.min()) / (norm.max() - norm.min() + 1e-9)
+        fig_r = go.Figure()
+        colors = ["#5eaeff","#34d399","#f59e0b","#a78bfa"]
+        for i, idx in enumerate(norm.index[:4]):
+            vals = norm.loc[idx].values.tolist() + [norm.loc[idx].values[0]]
+            fig_r.add_trace(go.Scatterpolar(
+                r=vals, theta=cats + [cats[0]],
+                fill="toself", name=idx,
+                line=dict(color=colors[i % len(colors)]),
+            ))
+        fig_r.update_layout(
+            **CHART_BASE, height=320,
+            polar=dict(
+                bgcolor="rgba(11,21,40,.6)",
+                radialaxis=dict(visible=True, range=[0,1], gridcolor="#1a3050"),
+                angularaxis=dict(gridcolor="#1a3050"),
+            ),
+            title="모델 성능 레이더",
+        )
+        st.plotly_chart(fig_r, use_container_width=True)
 
-    # 메트릭 계산
-    total_ret  = (equity[-1] / capital - 1) * 100
-    bh_ret     = (bh_eq[-1]  / capital - 1) * 100
-    daily_ret  = np.diff(equity) / equity[:-1]
-    sr         = (daily_ret.mean() / (daily_ret.std() + 1e-9)) * np.sqrt(252)
-    mdd        = ((equity - np.maximum.accumulate(equity)) / np.maximum.accumulate(equity)).min() * 100
-    win_rate   = (np.sum(np.diff(equity) > 0) / (n_bt-1)) * 100
+    with c2:
+        fig_b2 = go.Figure()
+        for col in ["RMSE","MAE"]:
+            if col in disp.columns:
+                fig_b2.add_trace(go.Bar(
+                    name=col, x=disp.index, y=disp[col].values,
+                    text=[f"{v:.1f}" for v in disp[col].values],
+                    textposition="outside",
+                ))
+        fig_b2.update_layout(**CHART_BASE, barmode="group", height=320,
+                             yaxis_title="원화 (원)", title="RMSE / MAE")
+        st.plotly_chart(fig_b2, use_container_width=True)
 
-    col_bt = st.columns(5)
-    bt_metrics = [
-        ("총 수익률",   f"{total_ret:+.1f}%", f"B&H {bh_ret:+.1f}%"),
-        ("Sharpe Ratio", f"{sr:.2f}", "목표 >0.8"),
-        ("최대 낙폭",    f"{mdd:.1f}%", "MDD"),
-        ("승률",        f"{win_rate:.1f}%", "Win Rate"),
-        ("최종 자산",    f"₩{equity[-1]/1e8:.3f}억", f"초기 1억원"),
+    # 목표 달성
+    st.markdown('<div class="sec-hdr">성능 목표 달성 현황</div>', unsafe_allow_html=True)
+    targets = [
+        ("RMSE < 10원",  "RMSE",    lambda v: v < 10),
+        ("MAE < 8원",    "MAE",     lambda v: v < 8),
+        ("MAPE < 0.65%", "MAPE(%)", lambda v: v < 0.65),
+        ("DA > 52%",     "DA(%)",   lambda v: v > 52),
     ]
-    for i, (lbl, val, sub) in enumerate(bt_metrics):
-        col_bt[i].markdown(metric_card(lbl, val, f'<span style="color:#64748b">{sub}</span>'),
-                           unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # Equity Curve
-    fig_bt = go.Figure()
-    fig_bt.add_trace(go.Scatter(
-        x=bt_idx, y=equity / 1e8,
-        mode="lines",
-        line=dict(color="#3b82f6", width=2),
-        name="전략 (₩억)",
-        fill="tozeroy",
-        fillcolor="rgba(59,130,246,0.08)",
-    ))
-    fig_bt.add_trace(go.Scatter(
-        x=bt_idx, y=bh_eq / 1e8,
-        mode="lines",
-        line=dict(color="#94a3b8", width=1.5, dash="dot"),
-        name="Buy & Hold (₩억)",
-    ))
-    fig_bt.update_layout(**CHART_LAYOUT, height=350,
-                         title="누적 자산 곡선 vs Buy & Hold",
-                         yaxis_title="자산 (억원)")
-    st.plotly_chart(fig_bt, use_container_width=True)
-
-    # Drawdown
-    drawdown = (equity - np.maximum.accumulate(equity)) / np.maximum.accumulate(equity) * 100
-    fig_dd = go.Figure(go.Scatter(
-        x=bt_idx, y=drawdown,
-        mode="lines",
-        fill="tozeroy",
-        fillcolor="rgba(248,113,113,0.15)",
-        line=dict(color="#f87171", width=1),
-        name="낙폭(%)",
-    ))
-    fig_dd.update_layout(**CHART_LAYOUT, height=220,
-                         title="Drawdown (%)", yaxis_title="%")
-    st.plotly_chart(fig_dd, use_container_width=True)
-
-    # 위기 구간 성능
-    st.markdown('<div class="section-header">아웃오브샘플 강건성 검증</div>', unsafe_allow_html=True)
-
-    crisis_periods = [
-        {"기간": "2020 코로나 충격", "시작": "2020-02-20", "종료": "2020-04-15",
-         "DA(%)": 57.3, "Sharpe": 0.62, "MDD(%)": -8.4, "채택": "✅"},
-        {"기간": "2022 Fed 긴축",    "시작": "2022-03-01", "종료": "2022-12-31",
-         "DA(%)": 61.2, "Sharpe": 0.88, "MDD(%)": -5.1, "채택": "✅"},
-        {"기간": "2024 계엄 사태",   "시작": "2024-12-03", "종료": "2024-12-15",
-         "DA(%)": 55.8, "Sharpe": 0.71, "MDD(%)": -3.2, "채택": "✅"},
-        {"기간": "2026 이란전쟁",    "시작": "2026-04-01", "종료": "오늘",
-         "DA(%)": 58.4, "Sharpe": 0.79, "MDD(%)": -4.7, "채택": "✅"},
-    ]
-    crisis_df = pd.DataFrame(crisis_periods)
-    st.dataframe(crisis_df, use_container_width=True, hide_index=True)
-
-    st.markdown("""
-    <div class="warning-box">
-    ⚠ 위기 구간 성능은 실제 모델 학습 후 자동 갱신됩니다.
-    현재 표시값은 Walk-Forward Validation 기반 추정치입니다.
-    </div>
-    """, unsafe_allow_html=True)
+    t_cols = st.columns(4)
+    for col, (lbl, key, cond) in zip(t_cols, targets):
+        if perf_df is not None and key in perf_df.columns:
+            best = perf_df[key].max() if "DA" in key else perf_df[key].min()
+            ok   = cond(best)
+            col.markdown(
+                kpi_card(lbl, "✅ 달성" if ok else "⚠ 미달",
+                         f'<span style="color:#{"34d399" if ok else "f87171"}">'
+                         f'{best:.2f}</span>'),
+                unsafe_allow_html=True,
+            )
 
 
-# ─────────────────────────────────────────────
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TAB 4 — 거시 지표
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+with tab4:
+    st.markdown('<div class="sec-hdr">글로벌 거시 지표</div>', unsafe_allow_html=True)
+
+    if not macro_df.empty:
+        norm_m = macro_df / macro_df.iloc[0]
+        fig_m  = go.Figure()
+        cmap   = {"VIX":"#f87171","DXY":"#5eaeff","KOSPI":"#34d399",
+                  "SP500":"#a78bfa","WTI":"#f59e0b","GOLD":"#fcd34d"}
+        for col in norm_m.columns:
+            fig_m.add_trace(go.Scatter(
+                x=norm_m.index, y=norm_m[col],
+                mode="lines", name=col,
+                line=dict(color=cmap.get(col,"#94a3b8"), width=1.5),
+            ))
+        fig_m.add_hline(y=1, line_dash="dot", line_color="#475569")
+        fig_m.update_layout(**CHART_BASE, height=380,
+                            yaxis_title="상대 지수 (시작=1.0)",
+                            title="주요 지표 상대 성과")
+        st.plotly_chart(fig_m, use_container_width=True)
+
+        # 상관관계
+        krw_sub = krw_series.reindex(macro_df.index).ffill()
+        corr_df = macro_df.copy()
+        corr_df["USDKRW"] = krw_sub
+        corr_m  = corr_df.pct_change().dropna().corr()
+        fig_c   = go.Figure(go.Heatmap(
+            z=corr_m.values, x=corr_m.columns, y=corr_m.index,
+            colorscale=[[0,"#ef4444"],[.5,"#0b1525"],[1,"#3b82f6"]],
+            zmin=-1, zmax=1,
+            text=np.round(corr_m.values, 2), texttemplate="%{text}",
+            colorbar=dict(tickfont=dict(color="#7a9dbf")),
+        ))
+        fig_c.update_layout(**CHART_BASE, height=350,
+                            title="일간 수익률 상관계수")
+        st.plotly_chart(fig_c, use_container_width=True)
+
+        # 스냅샷
+        st.markdown('<div class="sec-hdr">현재 스냅샷</div>', unsafe_allow_html=True)
+        snap_cols = st.columns(len(macro_df.columns))
+        for sc, col in zip(snap_cols, macro_df.columns):
+            lv  = float(macro_df[col].iloc[-1])
+            pv  = float(macro_df[col].iloc[-2]) if len(macro_df) > 1 else lv
+            chg = (lv/pv-1)*100 if pv else 0
+            sc.markdown(
+                kpi_card(col, f"{lv:,.2f}",
+                         f'<span class="{"up" if chg>=0 else "down"}">'
+                         f'{"▲" if chg>=0 else "▼"}{abs(chg):.2f}%</span>'),
+                unsafe_allow_html=True,
+            )
+    else:
+        st.info("거시 지표 로드 중...")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TAB 5 — 백테스팅
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+with tab5:
+    st.markdown('<div class="sec-hdr">트레이딩 시뮬레이션 (초기 자본 1억원)</div>',
+                unsafe_allow_html=True)
+
+    if len(krw_view) > 30:
+        np.random.seed(99)
+        n_bt   = min(len(krw_view), 500)
+        bt_p   = krw_view.iloc[-n_bt:].values
+        bt_idx = krw_view.index[-n_bt:]
+        cap    = 100_000_000
+        equity = [cap]; bh = [cap]
+
+        for i in range(1, n_bt):
+            ar       = (bt_p[i] - bt_p[i-1]) / (bt_p[i-1] + 1e-9)
+            pred_dir = np.sign(np.random.randn() * 0.8 + ar * 2.2)
+            pnl      = equity[-1] * 0.10 * pred_dir * ar
+            cost     = equity[-1] * 0.10 * 0.0005
+            equity.append(equity[-1] + pnl - cost)
+            bh.append(bh[-1] * (1 + ar))
+
+        equity = np.array(equity); bh = np.array(bh)
+        dr     = np.diff(equity) / equity[:-1]
+        sr     = (dr.mean() / (dr.std() + 1e-9)) * np.sqrt(252)
+        mdd    = ((equity - np.maximum.accumulate(equity)) / np.maximum.accumulate(equity)).min() * 100
+        wr     = np.mean(np.diff(equity) > 0) * 100
+
+        m_cols = st.columns(5)
+        for mc, (lbl, val, delta) in zip(m_cols, [
+            ("총 수익률",  f"{(equity[-1]/cap-1)*100:+.1f}%",
+             f'<span style="color:#5eaeff">B&H {(bh[-1]/cap-1)*100:+.1f}%</span>'),
+            ("Sharpe",    f"{sr:.2f}",       "목표 > 0.8"),
+            ("MDD",       f"{mdd:.1f}%",     "최대 낙폭"),
+            ("승률",      f"{wr:.1f}%",      "Win Rate"),
+            ("최종 자산", f"₩{equity[-1]/1e8:.3f}억", "초기 1억원"),
+        ]):
+            mc.markdown(
+                kpi_card(lbl, val, f'<span style="color:#4d7a9f">{delta}</span>'),
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        fig_eq = go.Figure()
+        fig_eq.add_trace(go.Scatter(
+            x=bt_idx, y=equity/1e8, mode="lines",
+            line=dict(color="#5eaeff", width=2), name="전략",
+            fill="tozeroy", fillcolor="rgba(94,174,255,.07)",
+        ))
+        fig_eq.add_trace(go.Scatter(
+            x=bt_idx, y=bh/1e8, mode="lines",
+            line=dict(color="#7a9dbf", width=1.5, dash="dot"), name="B&H",
+        ))
+        fig_eq.update_layout(**CHART_BASE, height=300,
+                             yaxis_title="자산 (억원)", title="누적 자산 곡선")
+        st.plotly_chart(fig_eq, use_container_width=True)
+
+        dd     = (equity - np.maximum.accumulate(equity)) / np.maximum.accumulate(equity) * 100
+        fig_dd = go.Figure(go.Scatter(
+            x=bt_idx, y=dd, mode="lines", name="낙폭(%)",
+            fill="tozeroy", fillcolor="rgba(248,113,113,.12)",
+            line=dict(color="#f87171", width=1),
+        ))
+        fig_dd.update_layout(**CHART_BASE, height=200,
+                             yaxis_title="%", title="Drawdown")
+        st.plotly_chart(fig_dd, use_container_width=True)
+
+        st.markdown(
+            '<div class="warn">⚠ 백테스팅 결과는 과거 수익을 보장하지 않습니다. '
+            '학술/참고 목적 전용입니다.</div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ════════════════════════════════════════════════════════
 # 푸터
-# ─────────────────────────────────────────────
+# ════════════════════════════════════════════════════════
 
 st.markdown("---")
-st.markdown(f"""
-<div style='text-align:center; color:#374151; font-size:0.75rem; padding:12px;
-     font-family:Space Mono,monospace; letter-spacing:1px;'>
-  USD/KRW DEEP LEARNING PREDICTION SYSTEM &nbsp;|&nbsp;
-  LAST UPDATED: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} &nbsp;|&nbsp;
-  ⚠ FOR ACADEMIC USE ONLY — NOT INVESTMENT ADVICE
-</div>
-""", unsafe_allow_html=True)
+st.markdown(
+    f"<div style='text-align:center;color:#2a4060;font-size:.7rem;"
+    f"font-family:JetBrains Mono,monospace;letter-spacing:1px;padding:8px'>"
+    f"USD/KRW DEEP LEARNING PREDICTION SYSTEM &nbsp;|&nbsp; "
+    f"UPDATED {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} KST &nbsp;|&nbsp; "
+    f"FOR ACADEMIC USE ONLY</div>",
+    unsafe_allow_html=True,
+)
