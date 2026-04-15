@@ -195,47 +195,73 @@ def kpi_card(label, value, delta_html=""):
 
 def get_spot_rate() -> tuple:
     """
-    실시간 USD/KRW — yfinance 1분봉 우선
-    반환: (가격, 소스명, KST 수집시각)
+    실시간 USD/KRW — 3개 소스 전부 수집 후 비교
+    반환: (최우선가격, 소스명, 수집시각, 전체소스dict)
+    전체소스dict = {"yfinance 1m": 1475.01, "ExchangeRate-API": 1475.36, ...}
     """
-    # 1순위: yfinance 1분봉
+    import requests
+
+    sources = {}   # {소스명: 가격}
+
+    # ── 1. yfinance 1분봉 ─────────────────────────────
     try:
         import yfinance as yf
         h = yf.Ticker("KRW=X").history(period="1d", interval="1m")
         if not h.empty:
-            price = float(h["Close"].iloc[-1])
-            ts    = h.index[-1]
-            if hasattr(ts, "to_pydatetime"):
-                ts = ts.to_pydatetime()
+            price = round(float(h["Close"].iloc[-1]), 2)
             if price > 100:
-                return price, f"yfinance 1m", now_kst()
+                sources["yfinance 1m"] = price
     except Exception:
         pass
 
-    # 2순위: yfinance 일봉
+    # ── 2. yfinance 2분봉 (1분봉 실패 시 대비) ─────────
     try:
         import yfinance as yf
-        h = yf.Ticker("KRW=X").history(period="5d")
+        h = yf.Ticker("KRW=X").history(period="1d", interval="2m")
         if not h.empty:
-            price = float(h["Close"].iloc[-1])
-            if price > 100:
-                return price, "yfinance 일봉", now_kst()
+            price = round(float(h["Close"].iloc[-1]), 2)
+            if price > 100 and "yfinance 1m" not in sources:
+                sources["yfinance 2m"] = price
     except Exception:
         pass
 
-    # 3순위: ExchangeRate-API (하루 1회)
+    # ── 3. ExchangeRate-API ───────────────────────────
     try:
-        import requests
-        r = requests.get("https://open.er-api.com/v6/latest/USD", timeout=4)
+        r = requests.get(
+            "https://open.er-api.com/v6/latest/USD", timeout=4
+        )
         d = r.json()
         if d.get("result") == "success":
-            price = float(d["rates"]["KRW"])
+            price = round(float(d["rates"]["KRW"]), 2)
             if price > 100:
-                return price, "ExchangeRate-API(1일1회)", now_kst()
+                sources["ExchangeRate-API"] = price
     except Exception:
         pass
 
-    return 0.0, "수집실패", now_kst()
+    # ── 4. Frankfurter ───────────────────────────────
+    try:
+        r = requests.get(
+            "https://api.frankfurter.app/latest?from=USD&to=KRW",
+            timeout=4,
+        )
+        d = r.json()
+        if "rates" in d and "KRW" in d["rates"]:
+            price = round(float(d["rates"]["KRW"]), 2)
+            if price > 100:
+                sources["Frankfurter"] = price
+    except Exception:
+        pass
+
+    if not sources:
+        return 0.0, "수집실패", now_kst(), {}
+
+    # 우선순위: yfinance 1m > yfinance 2m > ExchangeRate > Frankfurter
+    priority = ["yfinance 1m", "yfinance 2m",
+                "ExchangeRate-API", "Frankfurter"]
+    best_src   = next((k for k in priority if k in sources), list(sources.keys())[0])
+    best_price = sources[best_src]
+
+    return best_price, best_src, now_kst(), sources
 
 
 @st.cache_data(ttl=300)
@@ -362,9 +388,8 @@ macro_df  = get_macro()
 forecast  = load_forecast()
 perf_df   = load_performance()
 
-# ── 실시간 현재가 (yfinance 1분봉 → 일봉 폴백) ────────
-# get_spot_rate()는 캐시 없음 → 30초마다 rerun 시 항상 새로 호출
-spot_price, spot_src, spot_time = get_spot_rate()
+# ── 실시간 현재가 — 3개 소스 수집 + 비교 ─────────────
+spot_price, spot_src, spot_time, spot_sources = get_spot_rate()
 cur_price  = spot_price if spot_price > 0 else (
     float(krw_series.iloc[-1]) if len(krw_series) > 0 else 1482.0
 )
@@ -471,6 +496,21 @@ setTimeout(tick, 1000);
 
 if remain <= 0:
     st.cache_data.clear()
+
+# ── API 소스 비교 표시 ────────────────────────────────
+if spot_sources:
+    src_items = " &nbsp;|&nbsp; ".join(
+        f'<span style="color:{"#34d399" if k==spot_src else "#4d7a9f"}'
+        f';font-weight:{"700" if k==spot_src else "400"}">'
+        f'{"✅ " if k==spot_src else ""}{k}: ₩{v:,.2f}</span>'
+        for k, v in spot_sources.items()
+    )
+    st.markdown(
+        f"<div style='font-family:JetBrains Mono,monospace;font-size:.72rem;"
+        f"color:#4d7a9f;padding:4px 0 10px;text-align:center'>"
+        f"📡 소스 비교: {src_items}</div>",
+        unsafe_allow_html=True,
+    )
 
 # ════════════════════════════════════════════════════════
 # KPI 카드
