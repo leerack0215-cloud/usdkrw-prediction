@@ -180,43 +180,59 @@ def kpi_card(label, value, delta_html=""):
 # 데이터 로더 (캐시)
 # ════════════════════════════════════════════════════════
 
-@st.cache_data(ttl=60)   # 1분마다 실시간 환율 갱신
-def get_spot_rate() -> float:
+@st.cache_data(ttl=60)
+def get_spot_rate() -> tuple:
     """
-    ExchangeRate-API (무료, 가입 불필요) 로 실시간 USD/KRW 환율 수집
-    yfinance 대비 야간/주말 포함 실시간 반영
-    실패 시 yfinance 폴백
+    실시간 USD/KRW 현재가 수집
+    소스 우선순위:
+      1. ExchangeRate-API (무료, 야간/주말 포함 실시간)
+      2. Frankfurter API  (무료 대체)
+      3. yfinance 1분봉   (폴백)
+    반환: (가격, 소스명, 수집시각)
     """
-    import requests
+    import requests, datetime as dt
+
+    # 1순위: ExchangeRate-API
     try:
-        r = requests.get(
-            "https://open.er-api.com/v6/latest/USD",
-            timeout=5,
-        )
-        data = r.json()
-        if data.get("result") == "success":
-            return float(data["rates"]["KRW"])
+        r = requests.get("https://open.er-api.com/v6/latest/USD", timeout=5)
+        d = r.json()
+        if d.get("result") == "success" and "KRW" in d.get("rates", {}):
+            price = float(d["rates"]["KRW"])
+            if price > 0:
+                return price, "ExchangeRate-API", dt.datetime.now()
     except Exception:
         pass
 
-    # 폴백: yfinance
+    # 2순위: Frankfurter API
+    try:
+        r = requests.get("https://api.frankfurter.app/latest?from=USD&to=KRW", timeout=5)
+        d = r.json()
+        if "rates" in d and "KRW" in d["rates"]:
+            price = float(d["rates"]["KRW"])
+            if price > 0:
+                return price, "Frankfurter", dt.datetime.now()
+    except Exception:
+        pass
+
+    # 3순위: yfinance 1분봉
     try:
         import yfinance as yf
         t = yf.Ticker("KRW=X")
         h = t.history(period="1d", interval="1m")
         if not h.empty:
-            return float(h["Close"].iloc[-1])
+            price = float(h["Close"].iloc[-1])
+            if price > 0:
+                return price, "yfinance(지연)", dt.datetime.now()
     except Exception:
         pass
 
-    return 0.0   # 둘 다 실패 시
+    return 0.0, "수집실패", dt.datetime.now()
 
 
 @st.cache_data(ttl=300)
 def get_realtime():
     """
-    최신 환율 수집 → LGB 실시간 추론 (5분마다 자동 갱신)
-    현재가는 get_spot_rate() 로 별도 수집 (1분 갱신)
+    LGB 모델 실시간 추론 (5분마다 갱신)
     반환: (price_series, rt_predictions_dict, df_full, fetch_timestamp)
     """
     try:
@@ -333,19 +349,20 @@ macro_df  = get_macro()
 forecast  = load_forecast()
 perf_df   = load_performance()
 
-# ── 실시간 현재가 (1분 갱신) ─────────────────────────
-spot = get_spot_rate()
-last_price = spot if spot > 0 else (
+# ── 실시간 현재가 수집 (캐시 없이 매번 호출) ─────────
+# st_autorefresh가 1초마다 rerun → ttl=60 캐시로 1분마다 실제 API 호출
+spot_price, spot_src, spot_time = get_spot_rate()
+last_price = spot_price if spot_price > 0 else (
     float(krw_series.iloc[-1]) if len(krw_series) > 0 else 1482.0
 )
+prev_price  = float(krw_series.iloc[-2]) if len(krw_series) > 1 else last_price
+day_chg     = last_price - prev_price
+day_chg_pct = day_chg / prev_price * 100 if prev_price else 0
 
 cutoff   = krw_series.index[-1] - pd.Timedelta(days=period_days)
 krw_view = krw_series[krw_series.index >= cutoff]
 if len(krw_view) == 0:
     krw_view = krw_series
-prev_price  = float(krw_series.iloc[-2]) if len(krw_series) > 1 else last_price
-day_chg     = last_price - prev_price
-day_chg_pct = day_chg / prev_price * 100 if prev_price else 0
 
 # ════════════════════════════════════════════════════════
 # 헤더
@@ -358,9 +375,10 @@ st.markdown("""
 </div>""", unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════
-# 자동 새로고침 — 1초마다 카운트다운 갱신
-# 5분(300초) 경과 시 캐시 만료 → 예측 자동 갱신
-# 현재가는 get_spot_rate() ttl=60 으로 1분마다 별도 갱신
+# 자동 새로고침 + 카운트다운
+# st_autorefresh: 1초마다 rerun
+#   → get_spot_rate (ttl=60): 1분마다 실제 API 호출 → 현재가 갱신
+#   → get_realtime  (ttl=300): 5분마다 LGB 예측 갱신
 # ════════════════════════════════════════════════════════
 
 st_autorefresh(interval=1000, key="autorefresh")
@@ -370,7 +388,6 @@ now       = datetime.datetime.now()
 elapsed   = int((now - fetch_time).total_seconds())
 remain    = max(TTL_SEC - elapsed, 0)
 pct       = remain / TTL_SEC * 100
-update_at = fetch_time.strftime("%H:%M:%S")
 m = remain // 60
 s = remain % 60
 
@@ -384,7 +401,7 @@ else:
     timer_color = "#34d399"
     bar_color   = "linear-gradient(90deg,#2563eb,#34d399)"
 
-spot_src = "ExchangeRate-API" if spot > 0 else "yfinance(지연)"
+spot_time_str = spot_time.strftime("%H:%M:%S")
 
 st.markdown(f"""
 <div class="countdown-wrap">
@@ -393,7 +410,7 @@ st.markdown(f"""
   <div class="bar-track">
     <div class="bar-fill" style="width:{pct:.1f}%;background:{bar_color};height:5px;border-radius:99px;"></div>
   </div>
-  <span class="last-update">현재가: {spot_src} | 예측 기준: {update_at}</span>
+  <span class="last-update">현재가 출처: {spot_src} ({spot_time_str})</span>
 </div>
 """, unsafe_allow_html=True)
 
