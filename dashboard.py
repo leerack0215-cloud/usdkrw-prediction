@@ -411,21 +411,60 @@ elif remain <= 90:
 else:
     tc = "#34d399"; bc = "linear-gradient(90deg,#2563eb,#34d399)"
 
-lgb_update_kst = fmt_kst(fetch_time)   # LGB 예측 마지막 갱신 (KST)
-spot_kst       = fmt_kst(spot_time)    # 현재가 수집 시각 (KST)
+lgb_update_kst = fmt_kst(fetch_time)
+spot_kst       = fmt_kst(spot_time)
 
 st.markdown(f"""
 <div class="countdown-wrap">
   <span class="countdown-label">🔄 LGB 예측 갱신까지</span>
-  <span style="font-family:'JetBrains Mono',monospace;font-size:1.1rem;font-weight:700;color:{tc};min-width:52px;text-align:center;">{m}:{s:02d}</span>
+  <span id="kst-timer" style="font-family:'JetBrains Mono',monospace;
+    font-size:1.1rem;font-weight:700;color:#34d399;
+    min-width:52px;text-align:center;">{m}:{s:02d}</span>
   <div class="bar-track">
-    <div class="bar-fill" style="width:{pct:.1f}%;background:{bc};height:5px;border-radius:99px;"></div>
+    <div id="kst-bar" class="bar-fill"
+      style="width:{pct:.1f}%;background:linear-gradient(90deg,#2563eb,#34d399);
+      height:5px;border-radius:99px;"></div>
   </div>
   <span class="last-update">
-    🟢 LGB 예측: {lgb_update_kst} KST &nbsp;|&nbsp;
+    🟢 LGB: {lgb_update_kst} KST &nbsp;|&nbsp;
     💱 현재가({spot_src}): {spot_kst} KST
   </span>
-</div>""", unsafe_allow_html=True)
+</div>
+<script>
+(function(){{
+  var remain  = {remain};
+  var ttl     = {TTL_SEC};
+  var timerEl = document.getElementById('kst-timer');
+  var barEl   = document.getElementById('kst-bar');
+
+  function tick(){{
+    if(!timerEl || !barEl) return;
+    var m = Math.floor(remain/60);
+    var s = remain % 60;
+    timerEl.textContent = m + ':' + (s<10?'0':'') + s;
+
+    var pct = (remain/ttl)*100;
+    barEl.style.width = pct + '%';
+
+    if(remain <= 30){{
+      timerEl.style.color='#f87171';
+      barEl.style.background='linear-gradient(90deg,#dc2626,#f87171)';
+    }} else if(remain <= 90){{
+      timerEl.style.color='#f59e0b';
+      barEl.style.background='linear-gradient(90deg,#d97706,#f59e0b)';
+    }}
+
+    if(remain <= 0){{
+      window.location.reload();
+      return;
+    }}
+    remain--;
+    setTimeout(tick, 1000);
+  }}
+  setTimeout(tick, 1000);
+}})();
+</script>
+""", unsafe_allow_html=True)
 
 if remain <= 0:
     st.cache_data.clear()
@@ -971,16 +1010,21 @@ def fetch_news() -> list:
 
 
 @st.cache_data(ttl=3600)
-def analyze_sentiment(articles: tuple) -> list:
+def analyze_sentiment(articles_json: str) -> list:
     """
     Claude API로 뉴스 센티멘트 분석
-    각 뉴스별 USD/KRW 영향도를 -2 ~ +2 로 평가
-    (+ = 달러강세/원화약세, - = 달러약세/원화강세)
+    articles_json: JSON 문자열 (캐시 키로 사용 가능한 타입)
     """
+    import json as _json
+    articles = _json.loads(articles_json)
+
     if not articles:
         return []
 
-    import anthropic, json as _json
+    try:
+        import anthropic
+    except ImportError:
+        return []
 
     headlines = "\n".join(
         [f"{i+1}. {a['title']}" for i, a in enumerate(articles)]
@@ -1008,8 +1052,7 @@ def analyze_sentiment(articles: tuple) -> list:
             max_tokens = 1500,
             messages   = [{"role": "user", "content": prompt}],
         )
-        text = msg.content[0].text.strip()
-        # JSON 파싱
+        text  = msg.content[0].text.strip()
         start = text.find("[")
         end   = text.rfind("]") + 1
         return _json.loads(text[start:end])
@@ -1034,11 +1077,12 @@ with tab6:
     if not news_list:
         st.warning("뉴스를 불러오지 못했습니다. 잠시 후 다시 시도하세요.")
     else:
-        # 센티멘트 분석
+        # 센티멘트 분석 — JSON 문자열로 직렬화해서 전달
+        import json as _json
         with st.spinner(f"{len(news_list)}개 뉴스 AI 분석 중..."):
-            sentiments = analyze_sentiment(tuple(
-                (a["title"], a["source"]) for a in news_list
-            ))
+            sentiments = analyze_sentiment(
+                _json.dumps(news_list, ensure_ascii=False)
+            )
 
         # 센티멘트 맵 생성
         sent_map = {s["idx"]: s for s in sentiments}
@@ -1168,10 +1212,36 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── 30초마다 자동 갱신 (Streamlit Cloud 호환) ────────
-# sleep+rerun 대신 meta refresh 사용 → 탭/스크롤 유지
-st.markdown(
-    '<meta http-equiv="refresh" content="30">',
-    unsafe_allow_html=True,
-)
+# ── 카운트다운 + 자동 갱신 (JS) ─────────────────────
+# Streamlit Cloud는 meta refresh 미지원 → JS setTimeout 사용
+# 30초마다 window.location.reload() → 환율/예측 갱신
+_remain_sec = remain   # 현재 LGB 캐시 남은 시간
+st.markdown(f"""
+<div id="cd-footer" style="text-align:center;font-family:'JetBrains Mono',monospace;
+font-size:.72rem;color:#2a4060;padding:4px">
+  ⏱ 다음 갱신: <span id="cd-sec" style="color:#34d399">30</span>초
+</div>
+<script>
+(function(){{
+  var refreshSec = 30;
+  var remain = {_remain_sec};
+  var el = document.getElementById('cd-sec');
+
+  // 카운트다운 표시
+  var t = setInterval(function(){{
+    refreshSec--;
+    if(el) el.textContent = refreshSec;
+    if(refreshSec <= 0){{
+      clearInterval(t);
+      window.location.reload();
+    }}
+  }}, 1000);
+
+  // LGB 캐시 만료 시 즉시 갱신
+  if(remain <= 0){{
+    window.location.reload();
+  }}
+}})();
+</script>
+""", unsafe_allow_html=True)
 
