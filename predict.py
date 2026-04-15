@@ -148,10 +148,12 @@ def predict_today(
     arimax_lr_d1 = None
     if models["arimax"] is not None:
         try:
-            exog_last = get_arimax_exog(df).iloc[[-1]].values
-            arimax_pred = models["arimax"].predict(
+            exog_last   = get_arimax_exog(df).iloc[[-1]].values
+            raw         = models["arimax"].predict(
                 n_periods=1, exogenous=exog_last
             )
+            # pmdarima 버전에 따라 (array,) 또는 array 반환 — 안전하게 처리
+            arimax_pred  = raw[0] if isinstance(raw, tuple) else raw
             arimax_lr_d1 = float(np.clip(arimax_pred[0], -clip1, clip1))
             pred = round(last_price * np.exp(arimax_lr_d1), 2)
             results["models"]["D+1"]["ARIMAX"] = pred

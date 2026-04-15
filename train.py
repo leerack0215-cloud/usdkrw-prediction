@@ -113,12 +113,15 @@ def train_arimax(
         print(f"  최적 차수: ARIMA{order}")
 
         # Val 예측
-        n_val    = len(y_val)
-        preds, _ = model.predict(
+        # return_conf_int=False → 배열 1개만 반환 (tuple 아님)
+        n_val = len(y_val)
+        raw   = model.predict(
             n_periods  = n_val,
             exogenous  = exog_val.values,
             return_conf_int=False,
         )
+        # pmdarima 버전에 따라 (array,) 또는 array 반환 — 안전하게 처리
+        preds = raw[0] if isinstance(raw, tuple) else raw
         return model, np.array(preds)
 
     except ImportError:
