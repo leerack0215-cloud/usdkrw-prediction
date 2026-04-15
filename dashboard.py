@@ -580,13 +580,10 @@ with tab1:
 
     fig.update_layout(
         **CHART_BASE, height=560,
-        yaxis=dict(
-            range=[y_min, y_max],          # ← 오토핏 수동 설정
-            gridcolor="#1a3050", gridwidth=.5,
-            zeroline=False, linecolor="#1a3050",
-        ),
         yaxis2_title="RSI", yaxis3_title="%",
     )
+    # 가격 y축 범위 별도 설정 (CHART_BASE와 충돌 방지)
+    fig.update_yaxes(range=[y_min, y_max], row=1, col=1)
     st.plotly_chart(fig, use_container_width=True)
 
     # 기술 지표 + 수익률 요약
