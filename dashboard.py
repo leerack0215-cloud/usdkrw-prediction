@@ -17,6 +17,7 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from streamlit_autorefresh import st_autorefresh
 
 from utils import (
     collect_data, make_features,
@@ -320,56 +321,45 @@ st.markdown("""
 </div>""", unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════
-# 실시간 카운트다운 바
+# 자동 새로고침 — 1초마다 카운트다운 갱신
+# 5분(300초) 경과 시 캐시 만료 → 환율 + 예측 자동 갱신
 # ════════════════════════════════════════════════════════
 
-fetch_ts  = int(fetch_time.timestamp())          # 마지막 갱신 Unix timestamp
-ttl_sec   = 300                                  # 5분 = 300초
-update_at = fetch_time.strftime("%H:%M:%S")      # 마지막 갱신 시각
+st_autorefresh(interval=1000, key="autorefresh")  # 1000ms = 1초
+
+TTL_SEC   = 300
+now       = datetime.datetime.now()
+elapsed   = int((now - fetch_time).total_seconds())
+remain    = max(TTL_SEC - elapsed, 0)
+pct       = remain / TTL_SEC * 100
+update_at = fetch_time.strftime("%H:%M:%S")
+m = remain // 60
+s = remain % 60
+
+if remain <= 30:
+    timer_color = "#f87171"
+    bar_color   = "linear-gradient(90deg,#dc2626,#f87171)"
+elif remain <= 90:
+    timer_color = "#f59e0b"
+    bar_color   = "linear-gradient(90deg,#d97706,#f59e0b)"
+else:
+    timer_color = "#34d399"
+    bar_color   = "linear-gradient(90deg,#2563eb,#34d399)"
 
 st.markdown(f"""
 <div class="countdown-wrap">
   <span class="countdown-label">🔄 다음 갱신까지</span>
-  <span class="countdown-timer" id="cd-timer">5:00</span>
+  <span class="countdown-timer" style="color:{timer_color};font-family:'JetBrains Mono',monospace;font-size:1.1rem;font-weight:700;">{m}:{s:02d}</span>
   <div class="bar-track">
-    <div class="bar-fill" id="cd-bar" style="width:100%"></div>
+    <div class="bar-fill" style="width:{pct:.1f}%;background:{bar_color};height:5px;border-radius:99px;"></div>
   </div>
   <span class="last-update">마지막 갱신: {update_at}</span>
 </div>
-
-<script>
-(function() {{
-  const FETCH_TS  = {fetch_ts};
-  const TTL       = {ttl_sec};
-  const timer     = document.getElementById('cd-timer');
-  const bar       = document.getElementById('cd-bar');
-
-  function tick() {{
-    const now     = Math.floor(Date.now() / 1000);
-    const elapsed = now - FETCH_TS;
-    const remain  = Math.max(TTL - elapsed, 0);
-    const pct     = (remain / TTL) * 100;
-
-    // 타이머 텍스트
-    const m = Math.floor(remain / 60);
-    const s = remain % 60;
-    if (timer) timer.textContent = m + ':' + String(s).padStart(2, '0');
-
-    // 색상 단계
-    const cls = remain <= 30 ? 'urgent' : remain <= 90 ? 'warn' : '';
-    if (timer) {{ timer.className = 'countdown-timer ' + cls; }}
-    if (bar)   {{ bar.className   = 'bar-fill '          + cls;
-                  bar.style.width = pct + '%'; }}
-
-    // 0이 되면 페이지 자동 새로고침
-    if (remain <= 0) {{ window.location.reload(); }}
-  }}
-
-  tick();
-  setInterval(tick, 1000);
-}})();
-</script>
 """, unsafe_allow_html=True)
+
+# 5분 경과 → 캐시 초기화 → 다음 autorefresh 때 새 데이터 로드
+if remain <= 0:
+    st.cache_data.clear()
 
 # ════════════════════════════════════════════════════════
 # KPI 카드

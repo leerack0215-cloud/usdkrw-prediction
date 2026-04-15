@@ -4,6 +4,7 @@
 # ※ tensorflow 미포함 — Streamlit Cloud 메모리 한계 대응
 
 streamlit>=1.30.0
+streamlit-autorefresh>=1.0.1
 yfinance>=0.2.40
 pandas>=2.0.0
 numpy>=1.24.0
