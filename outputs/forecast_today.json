@@ -1,55 +1,69 @@
 {
-  "date_today": "2026-04-15",
-  "last_close": 1476.8399658203125,
-  "last_date": "2026-04-14",
+  "date_today": "2026-04-16",
+  "last_close": 1469.4200439453125,
+  "last_date": "2026-04-15",
+  "trained_at": "2026-04-16 07:17:13",
+  "n_models": 3,
   "forecasts": {
     "D+1": {
-      "price": 1477.09,
-      "change_pct": 0.017,
+      "price": 1469.7,
+      "log_return": 0.00018785353219532934,
+      "change_pct": 0.019,
       "direction": "상승 ↑"
     },
     "D+3": {
-      "price": 1475.55,
-      "change_pct": -0.087,
-      "direction": "하락 ↓"
+      "price": 1470.04,
+      "log_return": 0.00042403755696837647,
+      "change_pct": 0.042,
+      "direction": "상승 ↑"
     },
     "D+5": {
-      "price": 1474.07,
-      "change_pct": -0.188,
-      "direction": "하락 ↓"
+      "price": 1470.33,
+      "log_return": 0.0006201625650153937,
+      "change_pct": 0.062,
+      "direction": "상승 ↑"
     },
     "D+10": {
-      "price": 1472.6,
-      "change_pct": -0.287,
-      "direction": "하락 ↓"
+      "price": 1474.13,
+      "log_return": 0.0032030797655448638,
+      "change_pct": 0.321,
+      "direction": "상승 ↑"
     },
     "D+22": {
-      "price": 1472.23,
-      "change_pct": -0.312,
+      "price": 1461.13,
+      "log_return": -0.00565840538801156,
+      "change_pct": -0.564,
       "direction": "하락 ↓"
     }
+  },
+  "log_returns": {
+    "D+1": 0.00018785353219532934,
+    "D+3": 0.00042403755696837647,
+    "D+5": 0.0006201625650153937,
+    "D+10": 0.0032030797655448638,
+    "D+22": -0.00565840538801156
   },
   "models": {
     "D+1": {
-      "LGB": 1472.78,
-      "LSTM": 1476.13,
-      "BIGRU": 1477.17,
-      "★Ensemble": 1477.09
+      "LGB": 1466.19,
+      "LSTM": 1506.62,
+      "BIGRU": 1506.62,
+      "★Ensemble": 1469.7
     },
     "D+3": {
-      "LGB": 1475.55
+      "LGB": 1470.04
     },
     "D+5": {
-      "LGB": 1474.07
+      "LGB": 1470.33
     },
     "D+10": {
-      "LGB": 1472.6
+      "LGB": 1474.13
     },
     "D+22": {
-      "LGB": 1472.23
+      "LGB": 1461.13
     }
   },
-  "D+1_forecast": 1477.09,
+  "D+1_forecast": 1469.7,
   "direction": "상승",
-  "change_pct": 0.017
+  "change_pct": 0.019
 }
