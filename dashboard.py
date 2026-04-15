@@ -362,26 +362,15 @@ macro_df  = get_macro()
 forecast  = load_forecast()
 perf_df   = load_performance()
 
-# ── 실시간 현재가 수집 (캐시 없이 매번 호출) ─────────
-# fragment(run_every=60)로 현재가 1분마다 갱신
+# ── 실시간 현재가 (yfinance 1분봉 → 일봉 폴백) ────────
+# get_spot_rate()는 캐시 없음 → 30초마다 rerun 시 항상 새로 호출
 spot_price, spot_src, spot_time = get_spot_rate()
-last_price = spot_price if spot_price > 0 else (
+cur_price  = spot_price if spot_price > 0 else (
     float(krw_series.iloc[-1]) if len(krw_series) > 0 else 1482.0
 )
-
-# prev_price: yfinance 전일 종가 (소스 통일 — spot과 비교 오차 방지)
-# yfinance 마지막 값이 당일 종가에 가장 가까운 기준값
-yf_last    = float(krw_series.iloc[-1]) if len(krw_series) > 0 else last_price
-prev_price = float(krw_series.iloc[-2]) if len(krw_series) > 1 else yf_last
-
-# spot과 yfinance 마지막값 차이가 1% 이상이면 yfinance 기준으로 변화율 계산
-# (야간 등 시장 급변 제외한 정상 범위)
-if abs(last_price - yf_last) / (yf_last + 1e-9) > 0.01:
-    day_chg     = last_price - yf_last
-    day_chg_pct = day_chg / yf_last * 100 if yf_last else 0
-else:
-    day_chg     = last_price - prev_price
-    day_chg_pct = day_chg / prev_price * 100 if prev_price else 0
+prev_price  = float(krw_series.iloc[-2]) if len(krw_series) > 1 else cur_price
+day_chg     = cur_price - prev_price
+day_chg_pct = day_chg / prev_price * 100 if prev_price else 0
 
 cutoff   = krw_series.index[-1] - pd.Timedelta(days=period_days)
 krw_view = krw_series[krw_series.index >= cutoff]
@@ -397,29 +386,6 @@ st.markdown("""
   <h1>💹 USD / KRW 딥러닝 예측 시스템</h1>
   <p>LightGBM · LSTM · BiGRU · Ridge 앙상블 | 실시간 다중 호라이즌 예측</p>
 </div>""", unsafe_allow_html=True)
-
-# ════════════════════════════════════════════════════════
-# 실시간 현재가 수집 (매 rerun마다 직접 호출, 캐시 없음)
-# ════════════════════════════════════════════════════════
-
-spot_price, spot_src, spot_time = get_spot_rate()
-cur_price = spot_price if spot_price > 0 else (
-    float(krw_series.iloc[-1]) if len(krw_series) > 0 else 1482.0
-)
-prev_price  = float(krw_series.iloc[-2]) if len(krw_series) > 1 else cur_price
-day_chg     = cur_price - prev_price
-day_chg_pct = day_chg / prev_price * 100 if prev_price else 0
-
-# ── API 상태 디버그 표시 (문제 파악용) ─────────────────
-yf_last = float(krw_series.iloc[-1]) if len(krw_series) > 0 else 0
-st.info(
-    f"🔍 **API 진단**  |  "
-    f"spot_price={spot_price:.2f}  |  "
-    f"spot_src={spot_src}  |  "
-    f"yfinance_last={yf_last:.2f}  |  "
-    f"cur_price={cur_price:.2f}  |  "
-    f"KST={fmt_kst(spot_time)}"
-)
 
 # ════════════════════════════════════════════════════════
 # 카운트다운 바 (KST 기준)
