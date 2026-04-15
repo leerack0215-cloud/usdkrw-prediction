@@ -242,7 +242,11 @@ def get_spot_rate() -> tuple:
 def get_realtime():
     """
     LGB 모델 실시간 추론 (5분마다 갱신)
-    반환: (price_series, rt_predictions_dict, df_full, fetch_timestamp)
+    반환: (price_series, log_return_dict, df_full, fetch_timestamp)
+
+    핵심: 예측값을 절대가격이 아닌 log_return으로 저장
+    → 호출 시 cur_price(실시간 spot)에 곱해서 최종 예측가 산출
+    → spot 가격이 바뀔 때마다 예측가도 자동 갱신됨
     """
     try:
         df = collect_data(start="2018-01-01")
@@ -252,7 +256,7 @@ def get_realtime():
         feat_path   = f"{OUTPUT_DIR}/feature_list.json"
 
         if not (os.path.exists(scaler_path) and os.path.exists(feat_path)):
-            return df["USDKRW"], {}, df, datetime.datetime.now()
+            return df["USDKRW"], {}, df, now_kst()
 
         with open(scaler_path, "rb") as f:
             scaler = pickle.load(f)
@@ -263,11 +267,11 @@ def get_realtime():
             if col not in df.columns:
                 df[col] = 0.0
 
-        X_scaled   = scaler.transform(df[features].fillna(0))
-        last_price = float(df["USDKRW"].iloc[-1])
-        last_flat  = X_scaled[-1:].reshape(1, -1)
+        X_scaled  = scaler.transform(df[features].fillna(0))
+        last_flat = X_scaled[-1:].reshape(1, -1)
 
-        preds = {}
+        # log_return 저장 (절대가격 아님)
+        log_returns = {}
         for h in HORIZONS:
             path = f"{MODELS_DIR}/lgb_h{h}.pkl"
             if os.path.exists(path):
@@ -275,9 +279,9 @@ def get_realtime():
                     model = pickle.load(f)
                 clip = CLIP_BOUNDS[h]
                 lr   = float(np.clip(model.predict(last_flat)[0], -clip, clip))
-                preds[HORIZON_LABELS[h]] = round(last_price * np.exp(lr), 2)
+                log_returns[HORIZON_LABELS[h]] = lr   # ← log_return 저장
 
-        return df["USDKRW"], preds, df, now_kst()
+        return df["USDKRW"], log_returns, df, now_kst()
 
     except Exception as e:
         st.warning(f"데이터 로드 오류: {e}")
@@ -462,10 +466,19 @@ if remain <= 0:
 
 # ════════════════════════════════════════════════════════
 # KPI 카드
+# log_return → 실시간 cur_price 기준 예측가 변환
+# rt_preds = {label: log_return} 형태
 # ════════════════════════════════════════════════════════
 
-d1_rt = rt_preds.get("D+1", cur_price)
-d3_rt = rt_preds.get("D+3", cur_price)
+import math
+def lr_to_price(label, fallback):
+    lr = rt_preds.get(label)
+    if lr is None:
+        return fallback
+    return round(cur_price * math.exp(lr), 2)
+
+d1_rt = lr_to_price("D+1", cur_price)
+d3_rt = lr_to_price("D+3", cur_price)
 
 yr      = krw_series[krw_series.index >= krw_series.index[-1] - pd.Timedelta(days=365)]
 yr_high = float(yr.max()) if len(yr) > 0 else cur_price
@@ -615,16 +628,19 @@ with tab2:
 
     with col_l:
         st.markdown(
-            '<div class="sec-hdr">🟢 실시간 LGB 예측'
-            '<span class="badge-rt">5분 갱신</span></div>',
+            f'<div class="sec-hdr">🟢 실시간 LGB 예측'
+            f'<span class="badge-rt">기준가: ₩{cur_price:,.2f} · {spot_kst} KST</span></div>',
             unsafe_allow_html=True,
         )
         if rt_preds:
             rows = []
             for h in HORIZONS:
                 lbl  = HORIZON_LABELS[h]
-                pred = rt_preds.get(lbl, last_price)
-                pct  = (pred/last_price - 1) * 100
+                lr   = rt_preds.get(lbl)
+                if lr is None:
+                    continue
+                pred = round(cur_price * math.exp(lr), 2)
+                pct  = (pred / cur_price - 1) * 100
                 rows.append({
                     "호라이즌": lbl,
                     "예측 환율": f"₩{pred:,.2f}",
@@ -668,10 +684,13 @@ with tab2:
     st.markdown('<div class="sec-hdr">예측 팬 차트 (실시간 LGB)</div>', unsafe_allow_html=True)
     if rt_preds:
         h_list = [0, 1, 3, 5, 10, 22]
-        p_list = [last_price] + [rt_preds.get(HORIZON_LABELS[h], last_price) for h in [1,3,5,10,22]]
+        p_list = [cur_price] + [
+            round(cur_price * math.exp(rt_preds.get(HORIZON_LABELS[h], 0)), 2)
+            for h in [1, 3, 5, 10, 22]
+        ]
         fig_fan = go.Figure()
         for ci, alpha in [(0.99,0.06),(0.95,0.10),(0.80,0.16)]:
-            w = [last_price*0.002*np.sqrt(h) for h in h_list]
+            w = [cur_price*0.002*np.sqrt(h) for h in h_list]
             fig_fan.add_trace(go.Scatter(
                 x=h_list + h_list[::-1],
                 y=[p+ww for p,ww in zip(p_list,w)] + [p-ww for p,ww in zip(p_list,w)][::-1],
@@ -683,7 +702,7 @@ with tab2:
             line=dict(color="#5eaeff", width=2.5),
             marker=dict(size=8, color="#5eaeff"), name="LGB 예측",
         ))
-        fig_fan.add_hline(y=last_price, line_dash="dot",
+        fig_fan.add_hline(y=cur_price, line_dash="dot",
                           line_color="#475569", annotation_text="현재")
         fig_fan.update_layout(
             **CHART_BASE, height=320,
@@ -700,8 +719,8 @@ with tab2:
             marker_color=["#34d399" if v>last_price else "#f87171" for v in m_data.values()],
             text=[f"₩{v:,.0f}" for v in m_data.values()], textposition="outside",
         ))
-        fig_b.add_hline(y=last_price, line_dash="dash", line_color="#fbbf24",
-                        annotation_text=f"현재 ₩{last_price:,.0f}")
+        fig_b.add_hline(y=cur_price, line_dash="dash", line_color="#fbbf24",
+                        annotation_text=f"현재 ₩{cur_price:,.0f}")
         fig_b.update_layout(**CHART_BASE, height=280, showlegend=False,
                             yaxis_title="예측 환율 (원)")
         st.plotly_chart(fig_b, use_container_width=True)
