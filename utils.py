@@ -109,7 +109,7 @@ def collect_multiscale(
     for name, sym in TICKERS_DAILY.items():
         s = _download(sym, start_daily, end, "1d")
         if len(s) > 100:
-            frames_d[name] = s
+            frames_d[name] = s.rename(name)   # ← 컬럼명 명시적 지정
             print(f"    ✓ {name}: {len(s)}행")
         else:
             print(f"    ⚠ {name}: 데이터 부족 — 스킵")
@@ -118,6 +118,7 @@ def collect_multiscale(
         raise RuntimeError("USDKRW 일봉 수집 실패")
 
     df = pd.concat(frames_d.values(), axis=1)
+    df.columns = list(frames_d.keys())        # ← 컬럼명 재보장
     df.index = pd.to_datetime(df.index)
     df = df.sort_index().ffill().bfill()
 
@@ -197,10 +198,11 @@ def collect_data(start: str = "2015-01-01") -> pd.DataFrame:
     for name, sym in TICKERS_DAILY.items():
         s = _download(sym, start, today, "1d")
         if len(s) > 100:
-            frames[name] = s
+            frames[name] = s.rename(name)   # ← 컬럼명 명시적 지정
     if "USDKRW" not in frames:
         raise RuntimeError("USDKRW 수집 실패")
     df = pd.concat(frames.values(), axis=1)
+    df.columns = list(frames.keys())        # ← 컬럼명 재보장
     df.index = pd.to_datetime(df.index)
     return df.sort_index().ffill().bfill()
 
