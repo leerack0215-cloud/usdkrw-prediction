@@ -98,6 +98,58 @@ section[data-testid="stSidebar"] {
     font-family:'JetBrains Mono',monospace; font-size:.78rem;
     padding:8px 18px; transition:all .2s;
 }
+
+/* ── 카운트다운 바 ── */
+.countdown-wrap {
+    background: linear-gradient(90deg,#0a1829,#0f2240);
+    border: 1px solid rgba(40,90,160,.3);
+    border-radius: 10px;
+    padding: 10px 18px;
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+.countdown-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .72rem;
+    color: #4d7a9f;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    white-space: nowrap;
+}
+.countdown-timer {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #34d399;
+    min-width: 52px;
+    text-align: center;
+    transition: color .3s;
+}
+.countdown-timer.warn  { color: #f59e0b; }
+.countdown-timer.urgent{ color: #f87171; }
+.bar-track {
+    flex: 1;
+    height: 5px;
+    background: rgba(255,255,255,.06);
+    border-radius: 99px;
+    overflow: hidden;
+}
+.bar-fill {
+    height: 100%;
+    border-radius: 99px;
+    background: linear-gradient(90deg,#2563eb,#34d399);
+    transition: width .9s linear, background .3s;
+}
+.bar-fill.warn   { background: linear-gradient(90deg,#d97706,#f59e0b); }
+.bar-fill.urgent { background: linear-gradient(90deg,#dc2626,#f87171); }
+.last-update {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .68rem;
+    color: #2a4060;
+    white-space: nowrap;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -131,7 +183,7 @@ def kpi_card(label, value, delta_html=""):
 def get_realtime():
     """
     최신 환율 수집 → LGB 실시간 추론 (5분마다 자동 갱신)
-    반환: (price_series, rt_predictions_dict, df_full)
+    반환: (price_series, rt_predictions_dict, df_full, fetch_timestamp)
     """
     try:
         df = collect_data(start="2018-01-01")
@@ -141,7 +193,7 @@ def get_realtime():
         feat_path   = f"{OUTPUT_DIR}/feature_list.json"
 
         if not (os.path.exists(scaler_path) and os.path.exists(feat_path)):
-            return df["USDKRW"], {}, df
+            return df["USDKRW"], {}, df, datetime.datetime.now()
 
         with open(scaler_path, "rb") as f:
             scaler = pickle.load(f)
@@ -166,13 +218,13 @@ def get_realtime():
                 lr   = float(np.clip(model.predict(last_flat)[0], -clip, clip))
                 preds[HORIZON_LABELS[h]] = round(last_price * np.exp(lr), 2)
 
-        return df["USDKRW"], preds, df
+        return df["USDKRW"], preds, df, datetime.datetime.now()
 
     except Exception as e:
         st.warning(f"데이터 로드 오류: {e}")
         idx    = pd.date_range(end=datetime.date.today(), periods=500, freq="B")
         prices = 1380 + np.cumsum(np.random.default_rng(42).normal(0, 3, 500))
-        return pd.Series(prices, index=idx, name="USDKRW"), {}, pd.DataFrame()
+        return pd.Series(prices, index=idx, name="USDKRW"), {}, pd.DataFrame(), datetime.datetime.now()
 
 
 @st.cache_data(ttl=300)
@@ -242,7 +294,7 @@ with st.sidebar:
 # 데이터 로드
 # ════════════════════════════════════════════════════════
 
-krw_series, rt_preds, df_full = get_realtime()
+krw_series, rt_preds, df_full, fetch_time = get_realtime()
 macro_df  = get_macro()
 forecast  = load_forecast()
 perf_df   = load_performance()
@@ -266,6 +318,58 @@ st.markdown("""
   <h1>💹 USD / KRW 딥러닝 예측 시스템</h1>
   <p>LightGBM · LSTM · BiGRU · Ridge 앙상블 | 실시간 다중 호라이즌 예측</p>
 </div>""", unsafe_allow_html=True)
+
+# ════════════════════════════════════════════════════════
+# 실시간 카운트다운 바
+# ════════════════════════════════════════════════════════
+
+fetch_ts  = int(fetch_time.timestamp())          # 마지막 갱신 Unix timestamp
+ttl_sec   = 300                                  # 5분 = 300초
+update_at = fetch_time.strftime("%H:%M:%S")      # 마지막 갱신 시각
+
+st.markdown(f"""
+<div class="countdown-wrap">
+  <span class="countdown-label">🔄 다음 갱신까지</span>
+  <span class="countdown-timer" id="cd-timer">5:00</span>
+  <div class="bar-track">
+    <div class="bar-fill" id="cd-bar" style="width:100%"></div>
+  </div>
+  <span class="last-update">마지막 갱신: {update_at}</span>
+</div>
+
+<script>
+(function() {{
+  const FETCH_TS  = {fetch_ts};
+  const TTL       = {ttl_sec};
+  const timer     = document.getElementById('cd-timer');
+  const bar       = document.getElementById('cd-bar');
+
+  function tick() {{
+    const now     = Math.floor(Date.now() / 1000);
+    const elapsed = now - FETCH_TS;
+    const remain  = Math.max(TTL - elapsed, 0);
+    const pct     = (remain / TTL) * 100;
+
+    // 타이머 텍스트
+    const m = Math.floor(remain / 60);
+    const s = remain % 60;
+    if (timer) timer.textContent = m + ':' + String(s).padStart(2, '0');
+
+    // 색상 단계
+    const cls = remain <= 30 ? 'urgent' : remain <= 90 ? 'warn' : '';
+    if (timer) {{ timer.className = 'countdown-timer ' + cls; }}
+    if (bar)   {{ bar.className   = 'bar-fill '          + cls;
+                  bar.style.width = pct + '%'; }}
+
+    // 0이 되면 페이지 자동 새로고침
+    if (remain <= 0) {{ window.location.reload(); }}
+  }}
+
+  tick();
+  setInterval(tick, 1000);
+}})();
+</script>
+""", unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════
 # KPI 카드
