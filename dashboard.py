@@ -396,6 +396,17 @@ prev_price  = float(krw_series.iloc[-2]) if len(krw_series) > 1 else cur_price
 day_chg     = cur_price - prev_price
 day_chg_pct = day_chg / prev_price * 100 if prev_price else 0
 
+# ── API 상태 디버그 표시 (문제 파악용) ─────────────────
+yf_last = float(krw_series.iloc[-1]) if len(krw_series) > 0 else 0
+st.info(
+    f"🔍 **API 진단**  |  "
+    f"spot_price={spot_price:.2f}  |  "
+    f"spot_src={spot_src}  |  "
+    f"yfinance_last={yf_last:.2f}  |  "
+    f"cur_price={cur_price:.2f}  |  "
+    f"시각={spot_time.strftime('%H:%M:%S')}"
+)
+
 # ════════════════════════════════════════════════════════
 # 카운트다운 바
 # ════════════════════════════════════════════════════════
