@@ -1,1 +1,76 @@
+name: S3 → GitHub 자동 동기화
 
+# 매일 KST 06:30 (Lambda 실행 30분 후)에 자동 실행
+# 또는 Actions 탭에서 수동 실행 가능
+on:
+  schedule:
+    - cron: '30 21 * * *'   # UTC 21:30 = KST 06:30
+  workflow_dispatch:          # 수동 실행 버튼
+
+jobs:
+  sync-from-s3:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 레포 체크아웃
+      - name: 레포 체크아웃
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # 2. AWS 자격증명 설정
+      - name: AWS 자격증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ap-northeast-2
+
+      # 3. S3에서 최신 예측 파일 다운로드
+      - name: S3에서 예측 결과 다운로드
+        run: |
+          mkdir -p outputs/models
+
+          # 예측 결과 (매일 갱신)
+          aws s3 cp s3://${{ secrets.S3_BUCKET }}/outputs/forecast_today.json \
+                    outputs/forecast_today.json || echo "forecast_today.json 없음"
+
+          aws s3 cp s3://${{ secrets.S3_BUCKET }}/outputs/performance_table.csv \
+                    outputs/performance_table.csv || echo "performance_table.csv 없음"
+
+          # 모델 파일 (train.py 실행 시에만 갱신)
+          # 용량이 크므로 변경 시에만 다운로드
+          for model in lgb_h1.pkl lgb_h3.pkl lgb_h5.pkl lgb_h10.pkl lgb_h22.pkl \
+                       ensemble_h1.pkl arimax_h1.pkl scaler_X.pkl \
+                       feature_list.json meta_info.json; do
+            aws s3 cp s3://${{ secrets.S3_BUCKET }}/outputs/models/$model \
+                      outputs/models/$model 2>/dev/null || \
+            aws s3 cp s3://${{ secrets.S3_BUCKET }}/outputs/$model \
+                      outputs/$model 2>/dev/null || \
+            echo "  ⚠ $model 없음"
+          done
+
+          echo "✅ S3 다운로드 완료"
+
+      # 4. 변경사항 확인 후 커밋
+      - name: 변경사항 커밋 & 푸시
+        run: |
+          git config --global user.name  "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+
+          git add outputs/forecast_today.json \
+                  outputs/performance_table.csv \
+                  outputs/models/ \
+                  outputs/scaler_X.pkl \
+                  outputs/feature_list.json \
+                  outputs/meta_info.json 2>/dev/null || true
+
+          # 변경사항이 있을 때만 커밋
+          if git diff --staged --quiet; then
+            echo "📌 변경사항 없음 — 커밋 스킵"
+          else
+            TODAY=$(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M KST')
+            git commit -m "🤖 자동 예측 업데이트: $TODAY"
+            git push
+            echo "✅ GitHub 푸시 완료 → Streamlit Cloud 재배포 시작"
+          fi
