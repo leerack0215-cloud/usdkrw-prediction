@@ -1709,8 +1709,11 @@ padding:10px 14px;margin-bottom:6px'>
     y_min_v = float(view90.min()) * 0.998
     y_max_v = float(view90.max()) * 1.002
 
+    # CHART_BASE의 legend와 충돌 방지 — legend 별도 처리
+    chart_no_legend = {k: v for k, v in CHART_BASE.items() if k != "legend"}
     fig_sig.update_layout(
-        **CHART_BASE, height=640,
+        **chart_no_legend,
+        height=640,
         yaxis2_title="RSI",
         yaxis3_title="MACD",
         legend=dict(
