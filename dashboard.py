@@ -1,13 +1,12 @@
-“””
-dashboard.py — USD/KRW 딥러닝 예측 대시보드
-실행: streamlit run dashboard.py
 
-실시간 구조:
-① yfinance 최신 환율 수집 (5분 캐시)
-② LGB 모델 직접 로드 → 다중 호라이즌 실시간 추론
-③ forecast_today.json → Colab DL 앙상블 예측 표시
-④ performance_table.csv → 모델 성능 비교
-“””
+#dashboard.py — USD/KRW 딥러닝 예측 대시보드
+#실행: streamlit run dashboard.py
+
+#실시간 구조:
+#① yfinance 최신 환율 수집 (5분 캐시)
+#② LGB 모델 직접 로드 → 다중 호라이즌 실시간 추론
+#③ forecast_today.json → Colab DL 앙상블 예측 표시
+#④ performance_table.csv → 모델 성능 비교
 
 import os, json, pickle, warnings, datetime
 warnings.filterwarnings(“ignore”)
