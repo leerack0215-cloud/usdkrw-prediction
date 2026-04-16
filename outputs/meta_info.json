@@ -1,0 +1,13 @@
+{
+  "n_models": 4,
+  "has_arimax": true,
+  "arimax_exog": [
+    "rate_spread",
+    "dxy_ret5",
+    "wti_ret5",
+    "vix",
+    "krw_vs_cny_ret5",
+    "yield_curve"
+  ],
+  "trained_at": "2026-04-16 09:34:10"
+}
