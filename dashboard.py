@@ -836,24 +836,34 @@ with tab2:
     D1_HIST_PATH = f"{OUTPUT_DIR}/d1_history.json"
 
     def load_d1_history():
-        """파일에서 히스토리 로드"""
+        """파일에서 히스토리 로드 — 최근 24시간 데이터만 유지"""
         try:
             if os.path.exists(D1_HIST_PATH):
                 with open(D1_HIST_PATH, encoding="utf-8") as f:
                     raw = json.load(f)
-                # 오늘 날짜 데이터만 유지
-                today = now_kst().strftime("%Y-%m-%d")
-                return [r for r in raw if r.get("date") == today]
+                # 24시간 이내 데이터만 유지
+                cutoff = now_kst() - datetime.timedelta(hours=24)
+                result = []
+                for r in raw:
+                    try:
+                        dt = datetime.datetime.strptime(
+                            f"{r['date']} {r['ts']}", "%Y-%m-%d %H:%M:%S"
+                        ).replace(tzinfo=KST)
+                        if dt >= cutoff:
+                            result.append(r)
+                    except Exception:
+                        pass
+                return result
         except Exception:
             pass
         return []
 
     def save_d1_history(hist_list):
-        """히스토리를 파일에 저장"""
+        """히스토리를 파일에 저장 — 최대 2880개 (24시간 × 30초 간격)"""
         try:
             os.makedirs(OUTPUT_DIR, exist_ok=True)
             with open(D1_HIST_PATH, "w", encoding="utf-8") as f:
-                json.dump(hist_list[-120:], f, ensure_ascii=False)
+                json.dump(hist_list[-2880:], f, ensure_ascii=False)
         except Exception:
             pass
 
@@ -892,7 +902,23 @@ with tab2:
             })
             save_d1_history(hist)
     if len(hist) >= 1:
-        ts_list     = [h["ts"]     for h in hist]
+        # 24시간 범위면 날짜+시간, 1시간 이내면 시간만 표시
+        span_hrs = 0
+        if len(hist) >= 2:
+            try:
+                t0 = datetime.datetime.strptime(
+                    f"{hist[0]['date']} {hist[0]['ts']}", "%Y-%m-%d %H:%M:%S")
+                t1 = datetime.datetime.strptime(
+                    f"{hist[-1]['date']} {hist[-1]['ts']}", "%Y-%m-%d %H:%M:%S")
+                span_hrs = (t1 - t0).total_seconds() / 3600
+            except Exception:
+                pass
+
+        if span_hrs >= 1:
+            ts_list = [f"{h['date'][5:]} {h['ts']}" for h in hist]  # MM-DD HH:MM:SS
+        else:
+            ts_list = [h["ts"] for h in hist]
+
         lgb_list    = [h["lgb"]    for h in hist]
         arimax_list = [h["arimax"] for h in hist]
 
