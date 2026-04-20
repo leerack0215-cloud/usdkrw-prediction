@@ -857,7 +857,7 @@ with tab2:
             st.session_state.d1_history = st.session_state.d1_history[-120:]
 
     hist = st.session_state.d1_history
-    if len(hist) >= 2:
+    if len(hist) >= 1:
         ts_list     = [h["ts"].strftime("%H:%M:%S") for h in hist]
         lgb_list    = [h["lgb"]    for h in hist]
         arimax_list = [h["arimax"] for h in hist]
@@ -867,25 +867,29 @@ with tab2:
         # LGB 라인
         lgb_valid = [(t, v) for t, v in zip(ts_list, lgb_list) if v is not None]
         if lgb_valid:
+            lgb_mode = "lines+markers" if len(lgb_valid) > 1 else "markers"
+            lgb_sz   = 5 if len(lgb_valid) > 1 else 10
             fig_hist.add_trace(go.Scatter(
                 x=[t for t, _ in lgb_valid],
                 y=[v for _, v in lgb_valid],
-                mode="lines+markers",
+                mode=lgb_mode,
                 line=dict(color="#5eaeff", width=2),
-                marker=dict(size=5, color="#5eaeff"),
-                name="🟢 LGB D+1",
+                marker=dict(size=lgb_sz, color="#5eaeff"),
+                name="LGB D+1",
             ))
 
         # ARIMAX 라인 (값이 있는 구간만)
         arimax_valid = [(t, v) for t, v in zip(ts_list, arimax_list) if v is not None]
         if arimax_valid:
+            ax_mode = "lines+markers" if len(arimax_valid) > 1 else "markers"
+            ax_sz   = 6 if len(arimax_valid) > 1 else 12
             fig_hist.add_trace(go.Scatter(
                 x=[t for t, _ in arimax_valid],
                 y=[v for _, v in arimax_valid],
-                mode="lines+markers",
+                mode=ax_mode,
                 line=dict(color="#f59e0b", width=2, dash="dot"),
-                marker=dict(size=6, color="#f59e0b", symbol="diamond"),
-                name="🟠 ARIMAX D+1",
+                marker=dict(size=ax_sz, color="#f59e0b", symbol="diamond"),
+                name="ARIMAX D+1",
             ))
 
         # 현재가 기준선
