@@ -894,11 +894,37 @@ with tab2:
                 pass
 
         if should_add:
+            # 핵심 피처 스냅샷 수집 (df_full 마지막 행에서)
+            feat_snap = {}
+            try:
+                if df_full is not None and len(df_full) > 0:
+                    last_row = df_full.iloc[-1]
+                    snap_cols = [
+                        "dxy_ret5",    # 달러지수 5일 수익률
+                        "vix",         # 공포지수
+                        "rate_spread", # 한미 금리차
+                        "vol_regime",  # 변동성 레짐
+                        "h1_std",      # 1시간봉 표준편차
+                        "sox_ret5",    # 반도체지수 5일 수익률
+                        "ema5",        # 5일 EMA
+                        "rsi14",       # RSI
+                        "yield_curve", # 장단기 금리차
+                        "wti_ret5",    # WTI 5일 수익률
+                    ]
+                    for col in snap_cols:
+                        if col in last_row.index:
+                            v = last_row[col]
+                            feat_snap[col] = round(float(v), 6) if pd.notna(v) else None
+            except Exception:
+                pass
+
             hist.append({
-                "date":   date_str,
-                "ts":     ts_str,
-                "lgb":    lgb_d1_now,
-                "arimax": arimax_d1_now,
+                "date":      date_str,
+                "ts":        ts_str,
+                "lgb":       lgb_d1_now,
+                "arimax":    arimax_d1_now,
+                "cur_price": round(cur_price, 2),
+                "features":  feat_snap,
             })
             save_d1_history(hist)
     if len(hist) >= 1:
