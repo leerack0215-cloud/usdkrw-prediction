@@ -832,9 +832,30 @@ with tab2:
         unsafe_allow_html=True,
     )
 
-    # session_state로 히스토리 누적
-    if "d1_history" not in st.session_state:
-        st.session_state.d1_history = []
+    # ── 파일 기반 히스토리 (하드 리프레시 후에도 유지) ──
+    D1_HIST_PATH = f"{OUTPUT_DIR}/d1_history.json"
+
+    def load_d1_history():
+        """파일에서 히스토리 로드"""
+        try:
+            if os.path.exists(D1_HIST_PATH):
+                with open(D1_HIST_PATH, encoding="utf-8") as f:
+                    raw = json.load(f)
+                # 오늘 날짜 데이터만 유지
+                today = now_kst().strftime("%Y-%m-%d")
+                return [r for r in raw if r.get("date") == today]
+        except Exception:
+            pass
+        return []
+
+    def save_d1_history(hist_list):
+        """히스토리를 파일에 저장"""
+        try:
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+            with open(D1_HIST_PATH, "w", encoding="utf-8") as f:
+                json.dump(hist_list[-120:], f, ensure_ascii=False)
+        except Exception:
+            pass
 
     lgb_d1_now    = lr_to_price("D+1", None)
     arimax_d1_now = (
@@ -842,23 +863,36 @@ with tab2:
         if forecast else None
     )
 
+    hist = load_d1_history()
+
     if lgb_d1_now is not None or arimax_d1_now is not None:
         ts_now = now_kst()
-        # 마지막 기록과 30초 이상 차이날 때만 추가 (중복 방지)
-        if (not st.session_state.d1_history or
-                (ts_now - st.session_state.d1_history[-1]["ts"]).seconds >= 28):
-            st.session_state.d1_history.append({
-                "ts":     ts_now,
+        ts_str = ts_now.strftime("%H:%M:%S")
+        date_str = ts_now.strftime("%Y-%m-%d")
+
+        # 마지막 기록과 25초 이상 차이날 때만 추가 (중복 방지)
+        last_ts = hist[-1].get("ts", "") if hist else ""
+        should_add = True
+        if last_ts:
+            try:
+                last_t = datetime.datetime.strptime(
+                    f"{date_str} {last_ts}", "%Y-%m-%d %H:%M:%S"
+                ).replace(tzinfo=KST)
+                if (ts_now - last_t).total_seconds() < 25:
+                    should_add = False
+            except Exception:
+                pass
+
+        if should_add:
+            hist.append({
+                "date":   date_str,
+                "ts":     ts_str,
                 "lgb":    lgb_d1_now,
                 "arimax": arimax_d1_now,
             })
-        # 최대 120개 (약 1시간) 유지
-        if len(st.session_state.d1_history) > 120:
-            st.session_state.d1_history = st.session_state.d1_history[-120:]
-
-    hist = st.session_state.d1_history
+            save_d1_history(hist)
     if len(hist) >= 1:
-        ts_list     = [h["ts"].strftime("%H:%M:%S") for h in hist]
+        ts_list     = [h["ts"]     for h in hist]
         lgb_list    = [h["lgb"]    for h in hist]
         arimax_list = [h["arimax"] for h in hist]
 
@@ -917,7 +951,7 @@ with tab2:
         last = hist[-1]
         c1, c2 = st.columns(2)
         with c1:
-            if last["lgb"]:
+            if last.get("lgb"):
                 lgb_chg = (last["lgb"] / cur_price - 1) * 100
                 lgb_col = "#34d399" if lgb_chg >= 0 else "#f87171"
                 st.markdown(
@@ -931,7 +965,7 @@ with tab2:
                     unsafe_allow_html=True,
                 )
         with c2:
-            if last["arimax"]:
+            if last.get("arimax"):
                 arimax_chg = (last["arimax"] / cur_price - 1) * 100
                 arimax_col = "#34d399" if arimax_chg >= 0 else "#f87171"
                 st.markdown(
