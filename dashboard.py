@@ -720,13 +720,45 @@ with tab2:
         if forecast:
             rows2 = []
             for lbl, data in forecast.get("forecasts", {}).items():
+                # ARIMAX D+1 값 추가 (forecast["models"]["D+1"]["ARIMAX"])
+                arimax_val = None
+                if lbl == "D+1":
+                    arimax_val = (
+                        forecast.get("models", {})
+                        .get("D+1", {})
+                        .get("ARIMAX")
+                    )
                 rows2.append({
-                    "호라이즌": lbl,
-                    "예측 환율": f"₩{data['price']:,.2f}",
-                    "변화율":   f"{data['change_pct']:+.2f}%",
-                    "방향":     data["direction"],
+                    "호라이즌":      lbl,
+                    "앙상블 예측":   f"₩{data['price']:,.2f}",
+                    "ARIMAX (D+1)": f"₩{arimax_val:,.2f}" if arimax_val and lbl == "D+1" else ("—" if lbl != "D+1" else "없음"),
+                    "변화율":        f"{data['change_pct']:+.2f}%",
+                    "방향":          data["direction"],
                 })
             st.dataframe(pd.DataFrame(rows2), hide_index=True, width="stretch")
+
+            # ARIMAX 단독 강조 표시
+            arimax_d1 = (
+                forecast.get("models", {})
+                .get("D+1", {})
+                .get("ARIMAX")
+            )
+            if arimax_d1:
+                arimax_pct = (arimax_d1 / forecast.get("last_close", arimax_d1) - 1) * 100
+                arimax_dir = "↑ 상승" if arimax_pct > 0 else ("↓ 하락" if arimax_pct < 0 else "— 보합")
+                arimax_color = "#34d399" if arimax_pct > 0 else "#f87171"
+                st.markdown(
+                    f'<div style="margin-top:6px;padding:8px 12px;border-radius:6px;'
+                    f'background:#0f2035;border:1px solid #1a3050;">'
+                    f'<span style="font-size:.75rem;color:#94b8d4;">📊 ARIMAX D+1</span>&nbsp;&nbsp;'
+                    f'<span style="font-family:JetBrains Mono,monospace;font-size:1rem;'
+                    f'font-weight:700;color:{arimax_color};">₩{arimax_d1:,.2f}</span>'
+                    f'&nbsp;<span style="font-size:.8rem;color:{arimax_color};">'
+                    f'{arimax_pct:+.2f}% {arimax_dir}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
             st.caption(
                 f"기준일: {forecast.get('last_date','N/A')} | "
                 f"기준 환율: ₩{forecast.get('last_close',0):,.2f}"
@@ -737,8 +769,8 @@ with tab2:
                 unsafe_allow_html=True,
             )
 
-    # 팬 차트
-    st.markdown('<div class="sec-hdr">예측 팬 차트 (실시간 LGB)</div>', unsafe_allow_html=True)
+    # ── 팬 차트 (LGB + ARIMAX) ────────────────────────────
+    st.markdown('<div class="sec-hdr">예측 팬 차트 (실시간 LGB + ARIMAX)</div>', unsafe_allow_html=True)
     if rt_preds:
         h_list = [0, 1, 3, 5, 10, 22]
         p_list = [cur_price] + [
@@ -746,6 +778,7 @@ with tab2:
             for h in [1, 3, 5, 10, 22]
         ]
         fig_fan = go.Figure()
+        # CI 밴드
         for ci, alpha in [(0.99,0.06),(0.95,0.10),(0.80,0.16)]:
             w = [cur_price*0.002*np.sqrt(h) for h in h_list]
             fig_fan.add_trace(go.Scatter(
@@ -753,19 +786,162 @@ with tab2:
                 y=[p+ww for p,ww in zip(p_list,w)] + [p-ww for p,ww in zip(p_list,w)][::-1],
                 fill="toself", fillcolor=f"rgba(94,174,255,{alpha})",
                 line=dict(color="rgba(0,0,0,0)"), name=f"CI {int(ci*100)}%",
+                showlegend=(ci==0.80),
             ))
+        # LGB 라인
         fig_fan.add_trace(go.Scatter(
             x=h_list, y=p_list, mode="lines+markers",
             line=dict(color="#5eaeff", width=2.5),
-            marker=dict(size=8, color="#5eaeff"), name="LGB 예측",
+            marker=dict(size=8, color="#5eaeff"), name="🟢 LGB 실시간",
         ))
+        # ARIMAX D+1 포인트 (forecast에서)
+        arimax_d1_fan = (
+            forecast.get("models", {}).get("D+1", {}).get("ARIMAX")
+            if forecast else None
+        )
+        if arimax_d1_fan:
+            arimax_pct_fan = (arimax_d1_fan / cur_price - 1) * 100
+            fig_fan.add_trace(go.Scatter(
+                x=[1], y=[arimax_d1_fan], mode="markers+text",
+                marker=dict(size=14, color="#f59e0b", symbol="diamond",
+                            line=dict(color="#fff", width=2)),
+                text=[f"₩{arimax_d1_fan:,.0f}"],
+                textposition="top center",
+                textfont=dict(color="#f59e0b", size=11),
+                name=f"🟠 ARIMAX D+1 ({arimax_pct_fan:+.2f}%)",
+            ))
         fig_fan.add_hline(y=cur_price, line_dash="dot",
                           line_color="#475569", annotation_text="현재")
+        chart_no_legend = {k: v for k, v in CHART_BASE.items() if k != "legend"}
         fig_fan.update_layout(
-            **CHART_BASE, height=320,
+            **chart_no_legend, height=340,
             xaxis_title="영업일", yaxis_title="USD/KRW (원)",
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.01,
+                xanchor="left", x=0,
+                bgcolor="rgba(11,21,40,.8)",
+                bordercolor="#1a3050", borderwidth=1,
+                font=dict(size=10),
+            ),
         )
         st.plotly_chart(fig_fan, width="stretch")
+
+    # ── D+1 실시간 예측 추적 차트 ─────────────────────────
+    st.markdown(
+        '<div class="sec-hdr">📡 D+1 예측값 실시간 변화 (LGB · ARIMAX)</div>',
+        unsafe_allow_html=True,
+    )
+
+    # session_state로 히스토리 누적
+    if "d1_history" not in st.session_state:
+        st.session_state.d1_history = []
+
+    lgb_d1_now    = lr_to_price("D+1", None)
+    arimax_d1_now = (
+        forecast.get("models", {}).get("D+1", {}).get("ARIMAX")
+        if forecast else None
+    )
+
+    if lgb_d1_now is not None or arimax_d1_now is not None:
+        ts_now = now_kst()
+        # 마지막 기록과 30초 이상 차이날 때만 추가 (중복 방지)
+        if (not st.session_state.d1_history or
+                (ts_now - st.session_state.d1_history[-1]["ts"]).seconds >= 28):
+            st.session_state.d1_history.append({
+                "ts":     ts_now,
+                "lgb":    lgb_d1_now,
+                "arimax": arimax_d1_now,
+            })
+        # 최대 120개 (약 1시간) 유지
+        if len(st.session_state.d1_history) > 120:
+            st.session_state.d1_history = st.session_state.d1_history[-120:]
+
+    hist = st.session_state.d1_history
+    if len(hist) >= 2:
+        ts_list     = [h["ts"].strftime("%H:%M:%S") for h in hist]
+        lgb_list    = [h["lgb"]    for h in hist]
+        arimax_list = [h["arimax"] for h in hist]
+
+        fig_hist = go.Figure()
+
+        # LGB 라인
+        lgb_valid = [(t, v) for t, v in zip(ts_list, lgb_list) if v is not None]
+        if lgb_valid:
+            fig_hist.add_trace(go.Scatter(
+                x=[t for t, _ in lgb_valid],
+                y=[v for _, v in lgb_valid],
+                mode="lines+markers",
+                line=dict(color="#5eaeff", width=2),
+                marker=dict(size=5, color="#5eaeff"),
+                name="🟢 LGB D+1",
+            ))
+
+        # ARIMAX 라인 (값이 있는 구간만)
+        arimax_valid = [(t, v) for t, v in zip(ts_list, arimax_list) if v is not None]
+        if arimax_valid:
+            fig_hist.add_trace(go.Scatter(
+                x=[t for t, _ in arimax_valid],
+                y=[v for _, v in arimax_valid],
+                mode="lines+markers",
+                line=dict(color="#f59e0b", width=2, dash="dot"),
+                marker=dict(size=6, color="#f59e0b", symbol="diamond"),
+                name="🟠 ARIMAX D+1",
+            ))
+
+        # 현재가 기준선
+        fig_hist.add_hline(
+            y=cur_price, line_dash="dash", line_color="#475569",
+            annotation_text=f"현재 ₩{cur_price:,.0f}",
+            annotation_font_color="#94b8d4",
+        )
+
+        chart_no_legend2 = {k: v for k, v in CHART_BASE.items() if k != "legend"}
+        fig_hist.update_layout(
+            **chart_no_legend2, height=260,
+            xaxis_title="KST 시각", yaxis_title="D+1 예측 환율 (원)",
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.01,
+                xanchor="left", x=0,
+                bgcolor="rgba(11,21,40,.8)",
+                bordercolor="#1a3050", borderwidth=1,
+                font=dict(size=10),
+            ),
+        )
+        st.plotly_chart(fig_hist, width="stretch")
+
+        # 최신값 요약
+        last = hist[-1]
+        c1, c2 = st.columns(2)
+        with c1:
+            if last["lgb"]:
+                lgb_chg = (last["lgb"] / cur_price - 1) * 100
+                lgb_col = "#34d399" if lgb_chg >= 0 else "#f87171"
+                st.markdown(
+                    f'<div style="padding:8px 12px;border-radius:6px;background:#0f2035;'
+                    f'border:1px solid #1a3050;">'
+                    f'<span style="font-size:.75rem;color:#94b8d4;">🟢 LGB D+1 최신</span><br>'
+                    f'<span style="font-size:1.1rem;font-weight:700;color:{lgb_col};">'
+                    f'₩{last["lgb"]:,.2f}</span>'
+                    f'&nbsp;<span style="font-size:.85rem;color:{lgb_col};">{lgb_chg:+.2f}%</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+        with c2:
+            if last["arimax"]:
+                arimax_chg = (last["arimax"] / cur_price - 1) * 100
+                arimax_col = "#34d399" if arimax_chg >= 0 else "#f87171"
+                st.markdown(
+                    f'<div style="padding:8px 12px;border-radius:6px;background:#0f2035;'
+                    f'border:1px solid #1a3050;">'
+                    f'<span style="font-size:.75rem;color:#94b8d4;">🟠 ARIMAX D+1 최신</span><br>'
+                    f'<span style="font-size:1.1rem;font-weight:700;color:{arimax_col};">'
+                    f'₩{last["arimax"]:,.2f}</span>'
+                    f'&nbsp;<span style="font-size:.85rem;color:{arimax_col};">{arimax_chg:+.2f}%</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.info("📡 데이터 수집 중... 30초마다 자동 갱신되며 포인트가 쌓입니다.")
 
     # 모델별 D+1 비교
     if forecast and "models" in forecast and "D+1" in forecast["models"]:
