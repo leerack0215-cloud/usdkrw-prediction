@@ -24,6 +24,28 @@ from utils import (
     SEQ_LEN, OUTPUT_DIR, MODELS_DIR, CLIP_BOUNDS,
 )
 
+# ── S3 업로드 (10분마다 d1_history.json 동기화) ───────
+def upload_history_to_s3(local_path: str):
+    """d1_history.json을 S3에 업로드 (Streamlit secrets 사용)"""
+    try:
+        import boto3
+        cfg = st.secrets.get("aws", {})
+        key = cfg.get("access_key") or os.environ.get("AWS_ACCESS_KEY")
+        sec = cfg.get("secret_key") or os.environ.get("AWS_SECRET_KEY")
+        rgn = cfg.get("region",     "ap-southeast-2")
+        bkt = cfg.get("bucket",     "usdkrw-prediction-jason")
+        if not (key and sec):
+            return
+        s3 = boto3.client(
+            "s3",
+            aws_access_key_id     = key,
+            aws_secret_access_key = sec,
+            region_name           = rgn,
+        )
+        s3.upload_file(local_path, bkt, "outputs/d1_history.json")
+    except Exception:
+        pass
+
 # ── 한국시간 (KST = UTC+9) ────────────────────────────
 KST = datetime.timezone(datetime.timedelta(hours=9))
 
@@ -864,6 +886,9 @@ with tab2:
             os.makedirs(OUTPUT_DIR, exist_ok=True)
             with open(D1_HIST_PATH, "w", encoding="utf-8") as f:
                 json.dump(hist_list[-2880:], f, ensure_ascii=False)
+            # 10분마다 S3 동기화 (매 20번째 저장 = 30초 × 20 = 10분)
+            if len(hist_list) % 20 == 0:
+                upload_history_to_s3(D1_HIST_PATH)
         except Exception:
             pass
 
@@ -881,12 +906,12 @@ with tab2:
         date_str = ts_now.strftime("%Y-%m-%d")
 
         # 마지막 기록과 25초 이상 차이날 때만 추가 (중복 방지)
-        last_ts = hist[-1].get("ts", "") if hist else ""
+        last_rec = hist[-1] if hist else {}
         should_add = True
-        if last_ts:
+        if last_rec:
             try:
                 last_t = datetime.datetime.strptime(
-                    f"{date_str} {last_ts}", "%Y-%m-%d %H:%M:%S"
+                    f"{last_rec['date']} {last_rec['ts']}", "%Y-%m-%d %H:%M:%S"
                 ).replace(tzinfo=KST)
                 if (ts_now - last_t).total_seconds() < 25:
                     should_add = False
