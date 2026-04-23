@@ -478,7 +478,7 @@ st.markdown(f"""
   </span>
 </div>""", unsafe_allow_html=True)
 
-# JS 카운트다운 — 카운트다운만 표시, 리로드 없음
+# JS 카운트다운 — st.components.v1.html() 사용 (script 차단 우회)
 import streamlit.components.v1 as _stc
 _stc.html(f"""
 <script>
@@ -505,6 +505,10 @@ function tick() {{
     else barEl.style.background = 'linear-gradient(90deg,#2563eb,#34d399)';
   }}
 
+  if (remain <= 0) {{
+    window.parent.location.reload();
+    return;
+  }}
   remain--;
   setTimeout(tick, 1000);
 }}
@@ -512,10 +516,8 @@ setTimeout(tick, 1000);
 </script>
 """, height=0)
 
-# 5분마다 st.rerun() — 깜빡임 없는 부드러운 갱신
 if remain <= 0:
     st.cache_data.clear()
-    st.rerun()
 
 # ── API 소스 비교 표시 ────────────────────────────────
 if spot_sources:
@@ -2062,5 +2064,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# 자동 갱신은 상단 st.rerun()으로 처리 (깜빡임 없음)
+# 30초마다 자동 새로고침 (환율 + 예측 갱신)
+import streamlit.components.v1 as _stc2
+_stc2.html("""
+<script>
+setTimeout(function() {
+  window.parent.location.reload();
+}, 30000);
+</script>
+""", height=0)
 
