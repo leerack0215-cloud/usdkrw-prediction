@@ -3,6 +3,7 @@ make_ppt_v2.py  —  USD/KRW 환율 예측 시스템 (5분 발표, 8슬라이드
 레퍼런스 스타일: 다크 네이비 + 그린 포인트 / 컬러 테두리 카드
 """
 
+import os
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
@@ -389,7 +390,28 @@ txt(sl,
     Inches(0.45), Inches(7.14), Inches(6.7), Inches(0.28),
     size=11, color=C_GREEN, italic=True)
 
-# ── SL 6: 핵심 인사이트 ──────────────────────────────────
+# ── SL 6: 백테스트 시각화 ────────────────────────────────
+sl = blank(prs); bg(sl)
+section_label(sl, "B A C K T E S T   V I S U A L I Z A T I O N  ·  백 테 스 트   결 과")
+slide_title(sl, "D+1 예측 vs 실제  |  최근 30 영업일 비교")
+hline(sl, Inches(1.52))
+
+_img = os.path.join(os.path.dirname(__file__), "outputs", "backtest_visual.png")
+if os.path.exists(_img):
+    # 이미지 비율 16:11 → 슬라이드 잔여 영역에 맞춤
+    _iw, _ih = Inches(8.73), Inches(6.0)
+    _il = (W - _iw) / 2
+    sl.shapes.add_picture(_img, _il, Inches(1.45), _iw, _ih)
+else:
+    txt(sl, "⚠  outputs/backtest_visual.png 없음\n→  python visualize_backtest.py 를 먼저 실행하세요",
+        Inches(2.5), Inches(3.3), Inches(8.3), Inches(0.8),
+        size=14, color=C_RED, align=PP_ALIGN.CENTER)
+
+txt(sl, "※ 검증셋 통계 기반 시뮬레이션  |  실운영 시 collect_data() 로 실제 시장 데이터 사용",
+    Inches(0.45), Inches(7.2), W - Inches(0.9), Inches(0.22),
+    size=9, color=C_MUTED, italic=True, align=PP_ALIGN.CENTER)
+
+# ── SL 7: 핵심 인사이트 ──────────────────────────────────
 sl = blank(prs); bg(sl)
 section_label(sl, "K E Y   I N S I G H T S  ·  핵 심   인 사 이 트")
 slide_title(sl, "핵심 인사이트")
@@ -433,7 +455,7 @@ txt(sl,
     Inches(0.65), Inches(6.2), W - Inches(1.3), Inches(0.65),
     size=14, bold=True, color=C_WHITE, align=PP_ALIGN.CENTER)
 
-# ── SL 7: 배포 & 대시보드 ─────────────────────────────────
+# ── SL 8: 배포 & 대시보드 ─────────────────────────────────
 sl = blank(prs); bg(sl)
 section_label(sl, "D E P L O Y M E N T  ·  배 포   아 키 텍 처")
 slide_title(sl, "실시간 배포 아키텍처")
@@ -519,7 +541,7 @@ for tab, desc, col in dash_features:
         size=12, color=C_LIGHT)
     dfy += Inches(0.42)
 
-# ── SL 8: 결론 & 향후 계획 ───────────────────────────────
+# ── SL 9: 결론 & 향후 계획 ───────────────────────────────
 sl = blank(prs); bg(sl)
 section_label(sl, "C O N C L U S I O N  ·  결 론")
 slide_title(sl, "결론 & 향후 계획")
