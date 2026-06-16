@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+from scipy.stats import binomtest
 
 # ════════════════════════════════════════════════════════
 # 공용 상수
@@ -539,11 +540,16 @@ def compute_metrics(
     mape = float(np.mean(
         np.abs((y_true - y_pred) / (np.abs(y_true) + 1e-9))
     ) * 100)
-    da   = (
-        float(np.mean(
-            np.sign(np.diff(y_true)) == np.sign(np.diff(y_pred))
-        ) * 100) if len(y_true) > 1 else 0.0
-    )
+    if len(y_true) > 1:
+        correct = np.sign(np.diff(y_true)) == np.sign(np.diff(y_pred))
+        n_correct = int(correct.sum())
+        n_total   = len(correct)
+        da        = float(n_correct / n_total * 100)
+        # 이항검정: H0 = DA 50% (동전던지기), 단측 (greater)
+        binom_pval = round(float(binomtest(n_correct, n_total, p=0.5, alternative="greater").pvalue), 4)
+    else:
+        da, binom_pval = 0.0, 1.0
+
     ret  = np.diff(y_pred)
     sr   = (
         float((ret.mean() / (ret.std() + 1e-9)) * np.sqrt(252))
@@ -555,12 +561,14 @@ def compute_metrics(
         "MAE":     round(mae,  3),
         "MAPE(%)": round(mape, 3),
         "DA(%)":   round(da,   2),
+        "DA_p":    binom_pval,   # 이항검정 p-value (H0: DA=50%)
         "Sharpe":  round(sr,   3),
     }
     if label:
+        sig = "★" if binom_pval < 0.05 else " "
         print(
             f"  [{label:22s}] "
             f"RMSE={rmse:7.2f}원  MAE={mae:7.2f}원  "
-            f"MAPE={mape:5.2f}%  DA={da:5.1f}%"
+            f"MAPE={mape:5.2f}%  DA={da:5.1f}%  p={binom_pval:.4f}{sig}"
         )
     return result

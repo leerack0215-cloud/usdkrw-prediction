@@ -1105,6 +1105,33 @@ with tab3:
         width="stretch",
     )
 
+    # ── baseline & 통계적 유의성 안내 (교수 피드백 반영) ──
+    st.caption(
+        "※ Validation Set 단순 분할 결과 — "
+        "Walk-Forward Validation 미적용 (적용 시 수치 변동 가능)"
+    )
+    if "DA_p" in disp.columns:
+        base_da = (
+            float(disp.loc["Persistence_D+1", "DA(%)"])
+            if "Persistence_D+1" in disp.index else None
+        )
+        d1_rows = [i for i in disp.index
+                   if "D+1" in i and "Persistence" not in i]
+        sig_models = [i for i in d1_rows if disp.loc[i, "DA_p"] < 0.05]
+        msg = []
+        if base_da is not None:
+            msg.append(f"Persistence(현상유지) baseline DA = {base_da:.1f}%")
+        if sig_models:
+            msg.append(
+                "동전던지기(50%) 대비 통계적으로 유의(p<0.05)한 D+1 모델: "
+                + ", ".join(sig_models)
+            )
+        else:
+            msg.append(
+                "현재 어떤 D+1 모델도 50% 대비 통계적으로 유의하지 않음 (p≥0.05)"
+            )
+        st.info("　·　".join(msg))
+
     c1, c2 = st.columns(2)
     with c1:
         cats = ["RMSE↓","MAE↓","MAPE↓","DA%↑","Sharpe↑"]
