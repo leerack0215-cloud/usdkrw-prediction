@@ -365,11 +365,33 @@ def main():
 
     # ── Phase 8: 성능 평가 ───────────────────────────
     print("\n" + "=" * 65)
-    print("  모델 성능 비교 (Validation Set)")
+    print("  모델 성능 비교 (Validation Set, 단순 분할 결과)")
+    print("  ※ Walk-Forward Validation 적용 시 수치 변동 가능")
     print("=" * 65)
+
+    # Persistence baseline (예측값 = 현재 가격 유지, 변화 없음 가정)
+    y_true_d1_p = price_val * np.exp(val["y_h1"].values)
+    all_metrics["Persistence_D+1"] = compute_metrics(
+        y_true_d1_p, price_val, "Persistence D+1"
+    )
+
     perf_df = pd.DataFrame(all_metrics).T
     print(perf_df.to_string())
     perf_df.to_csv(f"{OUTPUT_DIR}/performance_table.csv")
+
+    # Ablation summary (D+1 모델 기여도 비교)
+    print("\n" + "=" * 65)
+    print("  [Ablation] D+1 단일 모델 vs Ridge 앙상블")
+    print("  DA_p < 0.05(★): 동전던지기(50%) 대비 통계적으로 유의")
+    print("=" * 65)
+    ablation_keys = [k for k in all_metrics if "D+1" in k]
+    for k in ablation_keys:
+        m = all_metrics[k]
+        da_str   = f"{m['DA(%)']:5.1f}%"
+        rmse_str = f"{m['RMSE']:7.3f}원" if isinstance(m["RMSE"], float) else f"{'—':>10}"
+        sig      = "★" if isinstance(m.get("DA_p"), float) and m["DA_p"] < 0.05 else " "
+        pval_str = f"p={m.get('DA_p', 1.0):.4f}" if isinstance(m.get("DA_p"), float) else ""
+        print(f"  {k:35s}  DA={da_str}  RMSE={rmse_str}  {pval_str}{sig}")
 
     # 파일 크기 확인
     print("\n[파일 크기]")
